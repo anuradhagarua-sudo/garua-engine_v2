@@ -688,7 +688,16 @@ try:
             try:
                 if API_CONFIG["is_connected"]:
                     encoded_token = urllib.parse.quote(urllib.parse.unquote(API_CONFIG["enc_token"]))
-                    ws_url = f"wss://ws.kite.trade/?api_key=kitefront&user_id={API_CONFIG['user_id']}&enctoken={encoded_token}&uid={int(time.time()*1000)}&user-agent=kite3-web&version=3.0.0"
+                    
+                    # Switched to the official Kite Web domain to bypass Android DNS Errno 7
+                    ws_url = (
+                        "wss://ws.zerodha.com/?api_key=kitefront"
+                        f"&user_id={API_CONFIG['user_id']}"
+                        f"&enctoken={encoded_token}"
+                        f"&uid={int(time.time()*1000)}"
+                        "&user-agent=kite3-web&version=3.0.0"
+                    )
+                    
                     stealth_ws = websocket.WebSocketApp(
                         ws_url,
                         header={"User-Agent": "Mozilla/5.0"},
@@ -697,6 +706,7 @@ try:
                         on_error=on_error,
                         on_close=on_close,
                     )
+                    
                     stealth_ws.run_forever(ping_interval=30, ping_timeout=10)
             except Exception: pass
             time.sleep(5)
