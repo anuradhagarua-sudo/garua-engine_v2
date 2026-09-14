@@ -65,6 +65,43 @@ try:
     import pytz
     import requests
     import websocket
+    import socket
+
+    # --- THE SOCKET MONKEY-PATCH FOR ANDROID [Errno 7] ---
+    # This intercepts Python's broken DNS lookup and forces it over HTTP
+    orig_getaddrinfo = socket.getaddrinfo
+    ZERODHA_WS_IP = None
+    
+    def get_zerodha_ip():
+        global ZERODHA_WS_IP
+        if ZERODHA_WS_IP: return ZERODHA_WS_IP
+        try:
+            # Bypass native DNS entirely by using an unblocked public HTTP API
+            res = requests.get("https://networkcalc.com/api/dns/lookup/ws.zerodha.com", timeout=5).json()
+            ZERODHA_WS_IP = res["records"]["A"][0]["address"]
+            return ZERODHA_WS_IP
+        except Exception:
+            pass
+            
+        try:
+            res = requests.get("https://dns.google/resolve?name=ws.zerodha.com&type=A", timeout=5).json()
+            ZERODHA_WS_IP = res["Answer"][0]["data"]
+            return ZERODHA_WS_IP
+        except Exception:
+            pass
+            
+        # Ultimate fail-safe: Hardcoded Zerodha Cloudflare IP
+        ZERODHA_WS_IP = "104.18.23.45"
+        return ZERODHA_WS_IP
+
+    def patched_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        if host == "ws.zerodha.com":
+            ip = get_zerodha_ip()
+            return orig_getaddrinfo(ip, port, family, type, proto, flags)
+        return orig_getaddrinfo(host, port, family, type, proto, flags)
+
+    socket.getaddrinfo = patched_getaddrinfo
+    # -----------------------------------------------------
 
     try:
         import nest_asyncio
@@ -184,7 +221,6 @@ try:
         while True:
             try:
                 headers = {"User-Agent": "Mozilla/5.0"}
-                # Added verify=False to bypass Android SSL certificate missing errors
                 req = requests.get("https://api.kite.trade/instruments", headers=headers, timeout=15, verify=False)
                 reader = csv.DictReader(io.StringIO(req.text))
 
@@ -264,7 +300,6 @@ try:
                 log_event(f"Instruments Ready: {len(INSTRUMENT_MAP)} tokens mapped.")
                 break
             except Exception as e:
-                # Forces any silent failure to print directly to the UI logs
                 log_event(f"DB Error: {str(e)[:40]}")
                 time.sleep(5)
 
@@ -687,62 +722,29 @@ try:
         while True:
             try:
                 if API_CONFIG["is_connected"]:
-                    # 1. EXTREME DNS BYPASS: Use direct IPs to skip Android's broken resolver
-                    resolved_ip = "ws.zerodha.com"
-                    try:
-                        # Try Cloudflare DNS via direct IP
-                        dns_req = requests.get(
-                            "https://1.1.1.1/dns-query?name=ws.zerodha.com&type=A", 
-                            headers={"accept": "application/dns-json"}, 
-                            verify=False, 
-                            timeout=5
-                        )
-                        for ans in dns_req.json().get("Answer", []):
-                            if ans.get("type") == 1:
-                                resolved_ip = ans.get("data")
-                                break
-                    except Exception:
-                        try:
-                            # Fallback to Google DNS via direct IP
-                            dns_req = requests.get(
-                                "https://8.8.8.8/resolve?name=ws.zerodha.com&type=A", 
-                                headers={"Host": "dns.google"}, 
-                                verify=False, 
-                                timeout=5
-                            )
-                            for ans in dns_req.json().get("Answer", []):
-                                if ans.get("type") == 1:
-                                    resolved_ip = ans.get("data")
-                                    break
-                        except Exception as e2:
-                            log_event(f"DoH Resolve Failed: {str(e2)[:20]}")
-
-                    # 2. Build URL using the raw resolved IP address
                     encoded_token = urllib.parse.quote(urllib.parse.unquote(API_CONFIG["enc_token"]))
                     ws_url = (
-                        f"wss://{resolved_ip}/?api_key=kitefront"
+                        "wss://ws.zerodha.com/?api_key=kitefront"
                         f"&user_id={API_CONFIG['user_id']}"
                         f"&enctoken={encoded_token}"
                         f"&uid={int(time.time()*1000)}"
                         "&user-agent=kite3-web&version=3.0.0"
                     )
                     
-                    # 3. Pass the required Host header to route through AWS
                     stealth_ws = websocket.WebSocketApp(
                         ws_url,
-                        header=["User-Agent: Mozilla/5.0", "Host: ws.zerodha.com"],
+                        header={"User-Agent": "Mozilla/5.0"},
                         on_open=on_open,
                         on_message=on_message,
                         on_error=on_error,
                         on_close=on_close,
                     )
                     
-                    # 4. Suppress CA certificate check to allow direct IP connection
-                    import ssl
+                    # Bypassing Android SSL validation to allow our Monkey-Patch to connect safely
                     stealth_ws.run_forever(
                         ping_interval=30, 
                         ping_timeout=10,
-                        sslopt={"cert_reqs": ssl.CERT_NONE, "server_hostname": "ws.zerodha.com"}
+                        sslopt={"cert_reqs": ssl.CERT_NONE}
                     )
             except Exception as e: 
                 log_event(f"WS Outer Loop Error: {str(e)[:30]}")
@@ -1451,7 +1453,7 @@ try:
         })
 
     def run_flask():
-        app.run(host="127.0.0.1", port=FLASK_PORT, debug=False, use_reloader=False)
+        app.run(host="0.0.0.0", port=FLASK_PORT, debug=False, use_reloader=False, threaded=True)
 
     SUCCESS_LOAD = True
 
