@@ -65,43 +65,6 @@ try:
     import pytz
     import requests
     import websocket
-    import socket
-
-    # --- THE SOCKET MONKEY-PATCH FOR ANDROID [Errno 7] ---
-    # This intercepts Python's broken DNS lookup and forces it over HTTP
-    orig_getaddrinfo = socket.getaddrinfo
-    ZERODHA_WS_IP = None
-    
-    def get_zerodha_ip():
-        global ZERODHA_WS_IP
-        if ZERODHA_WS_IP: return ZERODHA_WS_IP
-        try:
-            # Bypass native DNS entirely by using an unblocked public HTTP API
-            res = requests.get("https://networkcalc.com/api/dns/lookup/ws.zerodha.com", timeout=5).json()
-            ZERODHA_WS_IP = res["records"]["A"][0]["address"]
-            return ZERODHA_WS_IP
-        except Exception:
-            pass
-            
-        try:
-            res = requests.get("https://dns.google/resolve?name=ws.zerodha.com&type=A", timeout=5).json()
-            ZERODHA_WS_IP = res["Answer"][0]["data"]
-            return ZERODHA_WS_IP
-        except Exception:
-            pass
-            
-        # Ultimate fail-safe: Hardcoded Zerodha Cloudflare IP
-        ZERODHA_WS_IP = "104.18.23.45"
-        return ZERODHA_WS_IP
-
-    def patched_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-        if host == "ws.zerodha.com":
-            ip = get_zerodha_ip()
-            return orig_getaddrinfo(ip, port, family, type, proto, flags)
-        return orig_getaddrinfo(host, port, family, type, proto, flags)
-
-    socket.getaddrinfo = patched_getaddrinfo
-    # -----------------------------------------------------
 
     try:
         import nest_asyncio
@@ -722,29 +685,50 @@ try:
         while True:
             try:
                 if API_CONFIG["is_connected"]:
+                    # 1. HARD DNS RESOLUTION: Bypass Android Errno 7 natively
+                    resolved_ip = "104.18.23.45"  # Fallback Cloudflare IP for ws.zerodha.com
+                    try:
+                        res = requests.get("https://dns.google/resolve?name=ws.zerodha.com&type=A", timeout=5).json()
+                        if "Answer" in res:
+                            resolved_ip = res["Answer"][0]["data"]
+                    except Exception:
+                        log_event("DoH Resolve Failed: Using fallback IP")
+
+                    # 2. CONSTRUCT DIRECT-IP URL
                     encoded_token = urllib.parse.quote(urllib.parse.unquote(API_CONFIG["enc_token"]))
                     ws_url = (
-                        "wss://ws.zerodha.com/?api_key=kitefront"
+                        f"wss://{resolved_ip}/?api_key=kitefront"
                         f"&user_id={API_CONFIG['user_id']}"
                         f"&enctoken={encoded_token}"
                         f"&uid={int(time.time()*1000)}"
                         "&user-agent=kite3-web&version=3.0.0"
                     )
                     
+                    # 3. FORGE HEADERS: Instruct AWS/Cloudflare where to route the packet
+                    custom_headers = {
+                        "Host": "ws.zerodha.com",
+                        "User-Agent": "Mozilla/5.0"
+                    }
+
                     stealth_ws = websocket.WebSocketApp(
                         ws_url,
-                        header={"User-Agent": "Mozilla/5.0"},
+                        header=custom_headers,
                         on_open=on_open,
                         on_message=on_message,
                         on_error=on_error,
                         on_close=on_close,
                     )
                     
-                    # Bypassing Android SSL validation to allow our Monkey-Patch to connect safely
+                    # 4. INJECT SNI INTO SSL CONTEXT: Bypass Errno 110 Cloudflare Timeout
+                    import ssl
                     stealth_ws.run_forever(
                         ping_interval=30, 
                         ping_timeout=10,
-                        sslopt={"cert_reqs": ssl.CERT_NONE}
+                        sslopt={
+                            "cert_reqs": ssl.CERT_NONE, 
+                            "check_hostname": False,
+                            "server_hostname": "ws.zerodha.com"  # CRITICAL: Forces Cloudflare to accept the direct IP connection
+                        }
                     )
             except Exception as e: 
                 log_event(f"WS Outer Loop Error: {str(e)[:30]}")
