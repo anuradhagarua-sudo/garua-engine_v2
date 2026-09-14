@@ -680,58 +680,109 @@ try:
     def on_close(ws, c, m):
         DIAGNOSTICS["ws_status"] = "DISCONNECTED"
 
+    FALLBACK_IPS = [
+        "104.18.23.45",
+        "104.18.22.45",
+        "172.67.74.226"
+    ]
+
+    def resolve_target_ip(domain="ws.zerodha.com"):
+        # 1. Primary: Google DoH
+        try:
+            res = requests.get(f"https://dns.google/resolve?name={domain}&type=A", timeout=4).json()
+            for answer in res.get("Answer", []):
+                if answer.get("type") == 1:
+                    return answer.get("data")
+        except Exception:
+            pass
+
+        # 2. Secondary: Cloudflare 1.1.1.1 DoH direct IP
+        try:
+            res = requests.get(
+                f"https://1.1.1.1/dns-query?name={domain}&type=A",
+                headers={"accept": "application/dns-json"},
+                verify=False,
+                timeout=4
+            ).json()
+            for answer in res.get("Answer", []):
+                if answer.get("type") == 1:
+                    return answer.get("data")
+        except Exception:
+            pass
+
+        # 3. Tertiary: Responsive Anycast Health Check
+        for ip in FALLBACK_IPS:
+            try:
+                test = requests.head(
+                    f"https://{ip}/",
+                    headers={"Host": "kite.zerodha.com", "User-Agent": "Mozilla/5.0"},
+                    timeout=2.5,
+                    verify=False
+                )
+                if test.status_code < 500:
+                    return ip
+            except Exception:
+                continue
+
+        return FALLBACK_IPS[0]
+
     def start_websocket_stream():
         global stealth_ws
         while True:
             try:
-                if API_CONFIG["is_connected"]:
-                    # 1. HARD DNS RESOLUTION: Bypass Android Errno 7 natively
-                    resolved_ip = "104.18.23.45"  # Fallback Cloudflare IP for ws.zerodha.com
-                    try:
-                        res = requests.get("https://dns.google/resolve?name=ws.zerodha.com&type=A", timeout=5).json()
-                        if "Answer" in res:
-                            resolved_ip = res["Answer"][0]["data"]
-                    except Exception:
-                        log_event("DoH Resolve Failed: Using fallback IP")
+                if not API_CONFIG["is_connected"]:
+                    time.sleep(5)
+                    continue
 
-                    # 2. CONSTRUCT DIRECT-IP URL
-                    encoded_token = urllib.parse.quote(urllib.parse.unquote(API_CONFIG["enc_token"]))
-                    ws_url = (
-                        f"wss://{resolved_ip}/?api_key=kitefront"
-                        f"&user_id={API_CONFIG['user_id']}"
-                        f"&enctoken={encoded_token}"
-                        f"&uid={int(time.time()*1000)}"
-                        "&user-agent=kite3-web&version=3.0.0"
-                    )
-                    
-                    # 3. FORGE HEADERS: Instruct AWS/Cloudflare where to route the packet
-                    custom_headers = {
-                        "Host": "ws.zerodha.com",
-                        "User-Agent": "Mozilla/5.0"
-                    }
+                # 1. Self-Healing DNS Bypass
+                resolved_ip = resolve_target_ip()
+                
+                # 2. Build URL
+                encoded_token = urllib.parse.quote(urllib.parse.unquote(API_CONFIG["enc_token"]))
+                ws_url = (
+                    f"wss://{resolved_ip}/?api_key=kitefront"
+                    f"&user_id={API_CONFIG['user_id']}"
+                    f"&enctoken={encoded_token}"
+                    f"&uid={int(time.time()*1000)}"
+                    "&user-agent=kite3-web&version=3.0.0"
+                )
+                
+                # 3. Forge WAF Bypass Headers
+                custom_headers = [
+                    "Host: ws.zerodha.com",
+                    "Origin: https://kite.zerodha.com",
+                    "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ]
 
-                    stealth_ws = websocket.WebSocketApp(
-                        ws_url,
-                        header=custom_headers,
-                        on_open=on_open,
-                        on_message=on_message,
-                        on_error=on_error,
-                        on_close=on_close,
-                    )
-                    
-                    # 4. INJECT SNI INTO SSL CONTEXT: Bypass Errno 110 Cloudflare Timeout
-                    import ssl
-                    stealth_ws.run_forever(
-                        ping_interval=30, 
-                        ping_timeout=10,
-                        sslopt={
-                            "cert_reqs": ssl.CERT_NONE, 
-                            "check_hostname": False,
-                            "server_hostname": "ws.zerodha.com"  # CRITICAL: Forces Cloudflare to accept the direct IP connection
-                        }
-                    )
+                # 4. Explicit SSL Context for Android Compatibility
+                import ssl
+                ssl_ctx = ssl.create_default_context()
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = ssl.CERT_NONE
+
+                stealth_ws = websocket.WebSocketApp(
+                    ws_url,
+                    header=custom_headers,
+                    on_open=on_open,
+                    on_message=on_message,
+                    on_error=on_error,
+                    on_close=on_close,
+                )
+                
+                # 5. Run with SNI Injection and UTF-8 optimization
+                stealth_ws.run_forever(
+                    ping_interval=30, 
+                    ping_timeout=10,
+                    sslopt={
+                        "cert_reqs": ssl.CERT_NONE, 
+                        "check_hostname": False,
+                        "server_hostname": "ws.zerodha.com",  # Critical for SNI
+                        "context": ssl_ctx
+                    },
+                    skip_utf8_validation=True  # Performance boost
+                )
             except Exception as e: 
-                log_event(f"WS Outer Loop Error: {str(e)[:30]}")
+                log_event(f"WS Outer Loop Error: {str(e)[:40]}")
             time.sleep(5)
 
     def portfolio_sync_thread():
