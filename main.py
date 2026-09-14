@@ -59,7 +59,7 @@ CRASH_ERROR = ""
 SUCCESS_LOAD = False
 
 try:
-    import csv, datetime, io, json, logging, math, random, re, threading, time, urllib.parse, webbrowser
+    import csv, datetime, io, json, logging, math, random, re, threading, time, urllib.parse, webbrowser, ssl
     from flask import Flask, jsonify, render_template_string, request
     from kiteconnect import KiteTicker
     import pytz
@@ -184,7 +184,6 @@ try:
         while True:
             try:
                 headers = {"User-Agent": "Mozilla/5.0"}
-                # Added verify=False to bypass Android SSL certificate missing errors
                 req = requests.get("https://api.kite.trade/instruments", headers=headers, timeout=15, verify=False)
                 reader = csv.DictReader(io.StringIO(req.text))
 
@@ -264,7 +263,6 @@ try:
                 log_event(f"Instruments Ready: {len(INSTRUMENT_MAP)} tokens mapped.")
                 break
             except Exception as e:
-                # Forces any silent failure to print directly to the UI logs
                 log_event(f"DB Error: {str(e)[:40]}")
                 time.sleep(5)
 
@@ -687,28 +685,45 @@ try:
         while True:
             try:
                 if API_CONFIG["is_connected"]:
+                    # 1. DNS-over-HTTPS Bypass for Android Errno 7
+                    resolved_ip = "ws.zerodha.com"
+                    try:
+                        dns_req = requests.get("https://dns.google/resolve?name=ws.zerodha.com&type=A", timeout=5)
+                        for answer in dns_req.json().get("Answer", []):
+                            if answer.get("type") == 1:
+                                resolved_ip = answer.get("data")
+                                break
+                    except Exception as e:
+                        log_event(f"DoH Resolve Failed: {str(e)[:20]}")
+
+                    # 2. Build URL using the resolved IP address
                     encoded_token = urllib.parse.quote(urllib.parse.unquote(API_CONFIG["enc_token"]))
-                    
-                    # Switched to the official Kite Web domain to bypass Android DNS Errno 7
                     ws_url = (
-                        "wss://ws.zerodha.com/?api_key=kitefront"
+                        f"wss://{resolved_ip}/?api_key=kitefront"
                         f"&user_id={API_CONFIG['user_id']}"
                         f"&enctoken={encoded_token}"
                         f"&uid={int(time.time()*1000)}"
                         "&user-agent=kite3-web&version=3.0.0"
                     )
                     
+                    # 3. Pass the required Host header
                     stealth_ws = websocket.WebSocketApp(
                         ws_url,
-                        header={"User-Agent": "Mozilla/5.0"},
+                        header=["User-Agent: Mozilla/5.0", "Host: ws.zerodha.com"],
                         on_open=on_open,
                         on_message=on_message,
                         on_error=on_error,
                         on_close=on_close,
                     )
                     
-                    stealth_ws.run_forever(ping_interval=30, ping_timeout=10)
-            except Exception: pass
+                    # 4. Suppress CA certificate check to allow direct IP connection
+                    stealth_ws.run_forever(
+                        ping_interval=30, 
+                        ping_timeout=10,
+                        sslopt={"cert_reqs": ssl.CERT_NONE, "server_hostname": "ws.zerodha.com"}
+                    )
+            except Exception as e: 
+                log_event(f"WS Outer Loop Error: {str(e)[:30]}")
             time.sleep(5)
 
     def portfolio_sync_thread():
