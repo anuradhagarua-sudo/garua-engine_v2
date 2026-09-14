@@ -184,6 +184,7 @@ try:
         while True:
             try:
                 headers = {"User-Agent": "Mozilla/5.0"}
+                # Added verify=False to bypass Android SSL certificate missing errors
                 req = requests.get("https://api.kite.trade/instruments", headers=headers, timeout=15, verify=False)
                 reader = csv.DictReader(io.StringIO(req.text))
 
@@ -263,6 +264,7 @@ try:
                 log_event(f"Instruments Ready: {len(INSTRUMENT_MAP)} tokens mapped.")
                 break
             except Exception as e:
+                # Forces any silent failure to print directly to the UI logs
                 log_event(f"DB Error: {str(e)[:40]}")
                 time.sleep(5)
 
@@ -685,18 +687,37 @@ try:
         while True:
             try:
                 if API_CONFIG["is_connected"]:
-                    # 1. DNS-over-HTTPS Bypass for Android Errno 7
+                    # 1. EXTREME DNS BYPASS: Use direct IPs to skip Android's broken resolver
                     resolved_ip = "ws.zerodha.com"
                     try:
-                        dns_req = requests.get("https://dns.google/resolve?name=ws.zerodha.com&type=A", timeout=5)
-                        for answer in dns_req.json().get("Answer", []):
-                            if answer.get("type") == 1:
-                                resolved_ip = answer.get("data")
+                        # Try Cloudflare DNS via direct IP
+                        dns_req = requests.get(
+                            "https://1.1.1.1/dns-query?name=ws.zerodha.com&type=A", 
+                            headers={"accept": "application/dns-json"}, 
+                            verify=False, 
+                            timeout=5
+                        )
+                        for ans in dns_req.json().get("Answer", []):
+                            if ans.get("type") == 1:
+                                resolved_ip = ans.get("data")
                                 break
-                    except Exception as e:
-                        log_event(f"DoH Resolve Failed: {str(e)[:20]}")
+                    except Exception:
+                        try:
+                            # Fallback to Google DNS via direct IP
+                            dns_req = requests.get(
+                                "https://8.8.8.8/resolve?name=ws.zerodha.com&type=A", 
+                                headers={"Host": "dns.google"}, 
+                                verify=False, 
+                                timeout=5
+                            )
+                            for ans in dns_req.json().get("Answer", []):
+                                if ans.get("type") == 1:
+                                    resolved_ip = ans.get("data")
+                                    break
+                        except Exception as e2:
+                            log_event(f"DoH Resolve Failed: {str(e2)[:20]}")
 
-                    # 2. Build URL using the resolved IP address
+                    # 2. Build URL using the raw resolved IP address
                     encoded_token = urllib.parse.quote(urllib.parse.unquote(API_CONFIG["enc_token"]))
                     ws_url = (
                         f"wss://{resolved_ip}/?api_key=kitefront"
@@ -706,7 +727,7 @@ try:
                         "&user-agent=kite3-web&version=3.0.0"
                     )
                     
-                    # 3. Pass the required Host header
+                    # 3. Pass the required Host header to route through AWS
                     stealth_ws = websocket.WebSocketApp(
                         ws_url,
                         header=["User-Agent: Mozilla/5.0", "Host: ws.zerodha.com"],
@@ -717,6 +738,7 @@ try:
                     )
                     
                     # 4. Suppress CA certificate check to allow direct IP connection
+                    import ssl
                     stealth_ws.run_forever(
                         ping_interval=30, 
                         ping_timeout=10,
