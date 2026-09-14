@@ -184,7 +184,8 @@ try:
         while True:
             try:
                 headers = {"User-Agent": "Mozilla/5.0"}
-                req = requests.get("https://api.kite.trade/instruments", headers=headers, timeout=15)
+                # Added verify=False to bypass Android SSL certificate missing errors
+                req = requests.get("https://api.kite.trade/instruments", headers=headers, timeout=15, verify=False)
                 reader = csv.DictReader(io.StringIO(req.text))
 
                 t_INSTRUMENT_MAP, t_TOKEN_EXPIRY_MAP = {}, {}
@@ -262,7 +263,9 @@ try:
 
                 log_event(f"Instruments Ready: {len(INSTRUMENT_MAP)} tokens mapped.")
                 break
-            except Exception:
+            except Exception as e:
+                # Forces any silent failure to print directly to the UI logs
+                log_event(f"DB Error: {str(e)[:40]}")
                 time.sleep(5)
 
     def norm_cdf(x):
