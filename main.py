@@ -59,7 +59,7 @@ CRASH_ERROR = ""
 SUCCESS_LOAD = False
 
 try:
-    import csv, datetime, io, json, logging, math, random, re, threading, time, urllib.parse, webbrowser, ssl
+    import csv, datetime, io, json, logging, math, random, re, threading, time, urllib.parse, webbrowser, ssl, certifi
     from flask import Flask, jsonify, render_template_string, request
     from kiteconnect import KiteTicker
     import pytz
@@ -1321,8 +1321,15 @@ try:
         try:
             check = KITE_SESSION.get(
                 "https://kite.zerodha.com/oms/user/profile/full",
-                headers={"authorization": f"enctoken {enc_token}"},
-                timeout=8,
+                headers={
+                    "authorization": f"enctoken {enc_token}",
+                    "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36",
+                    "Accept": "application/json, text/plain, */*",
+                    "Referer": "https://kite.zerodha.com/",
+                    "X-Kite-Version": "3",
+                },
+                timeout=(10, 20),
+                verify=certifi.where(),
             )
             response_data = check.json()
             if check.status_code != 200 or not isinstance(response_data, dict) or response_data.get("status") != "success":
@@ -1331,8 +1338,18 @@ try:
             returned_user = str(profile.get("user_id", "")).strip() if isinstance(profile, dict) else ""
             if not returned_user or returned_user.lower() != user_id.lower():
                 return jsonify({"status": "error", "message": "Broker user ID did not match the entered ID."}), 401
-        except requests.RequestException:
-            return jsonify({"status": "error", "message": "Could not reach the broker to verify credentials."}), 503
+        except requests.exceptions.SSLError:
+            log_event("Broker login failed: TLS certificate validation error.")
+            return jsonify({"status": "error", "message": "Secure connection to Zerodha failed. Check your phone date/time and retry on another network."}), 503
+        except requests.exceptions.Timeout:
+            log_event("Broker login failed: connection timeout.")
+            return jsonify({"status": "error", "message": "Zerodha did not respond in time. Check internet access and retry."}), 504
+        except requests.exceptions.ConnectionError:
+            log_event("Broker login failed: network or DNS connection error.")
+            return jsonify({"status": "error", "message": "Could not connect to kite.zerodha.com. Check internet/DNS, then retry."}), 503
+        except requests.RequestException as e:
+            log_event(f"Broker login failed: request setup error ({type(e).__name__}).")
+            return jsonify({"status": "error", "message": f"Broker request failed ({type(e).__name__}). Check the entered credentials and retry."}), 400
         except (ValueError, TypeError):
             return jsonify({"status": "error", "message": "Broker returned an invalid authentication response."}), 502
 
