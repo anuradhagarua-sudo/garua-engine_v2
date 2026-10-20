@@ -141,7 +141,8 @@ try:
     STRATEGY_LEGS, INSTRUMENT_MAP, TOKEN_EXPIRY_MAP = [], {}, {}
     GLOBAL_EXPIRIES, GLOBAL_INSTRUMENT_META, GLOBAL_SYMBOL_MAP = {}, {}, {}
     ACTIVE_POSITIONS, LIVE_PNLS = {}, {}
-    ORDER_FIRED = False
+    EXIT_IN_PROGRESS = False
+    EXIT_STATE_LOCK = threading.Lock()
     CURRENT_ACTIVE_SL = None
     LIVE_LEG_PRICES, LIVE_LEG_VWAP, LIVE_LEG_DEPTH = {}, {}, {}
     (
@@ -184,7 +185,8 @@ try:
         while True:
             try:
                 headers = {"User-Agent": "Mozilla/5.0"}
-                req = requests.get("https://api.kite.trade/instruments", headers=headers, timeout=15, verify=False)
+                req = requests.get("https://api.kite.trade/instruments", headers=headers, timeout=15)
+                req.raise_for_status()
                 reader = csv.DictReader(io.StringIO(req.text))
 
                 t_INSTRUMENT_MAP, t_TOKEN_EXPIRY_MAP = {}, {}
@@ -260,6 +262,8 @@ try:
                 if "NSE:NIFTY 50" in INSTRUMENT_MAP:
                     STRATEGY_CONFIG["master_und_token"] = INSTRUMENT_MAP["NSE:NIFTY 50"]
 
+                if not INSTRUMENT_MAP:
+                    raise ValueError("Instrument master contained no usable rows")
                 log_event(f"Instruments Ready: {len(INSTRUMENT_MAP)} tokens mapped.")
                 break
             except Exception as e:
@@ -353,7 +357,7 @@ try:
             ld = fetch_history(token)
             if ld: leg_dicts[token] = ld
 
-        if not leg_dicts: return
+        if not leg_dicts or len(leg_dicts) != len({l["token"] for l in active_legs}): return
         all_timestamps = set(master_dict.keys())
         for ld in leg_dicts.values(): all_timestamps.update(ld.keys())
         sorted_timestamps = sorted(list(all_timestamps))
@@ -365,7 +369,7 @@ try:
         for dt in sorted_timestamps:
             if dt in master_dict: last_known["master"] = master_dict[dt]
             for t in leg_dicts.keys():
-                if dt in leg_dicts[t]: last_known[t] = leg_dicts[t]
+                if dt in leg_dicts[t]: last_known[t] = leg_dicts[t][dt]
             if all(v > 0 for v in last_known.values()):
                 final_rows.append((dt, dict(last_known)))
 
@@ -430,15 +434,15 @@ try:
                 requested_type = "PROTECTED"
 
         if requested_type == "PROTECTED" or (requested_type == "MARKET" and is_mcx_opt):
-            if ltp == 0: ltp = LIVE_LEG_PRICES.get(token, 0.0)
-            if ltp > 0:
-                buf = max(prot_pct, 1.0) / 100.0
-                raw_price = ltp * (1 + buf) if action == "BUY" else ltp * (1 - buf)
-                limit_price = round(round(max(raw_price, tick) / tick) * tick, 4)
-                final_order_type = "LIMIT"
-            elif is_mcx_opt:
-                log_event(f"REJECT ({sym}): Market Order blocked on MCX Option.")
+            if ltp <= 0:
+                ltp = LIVE_LEG_PRICES.get(token, 0.0)
+            if ltp <= 0:
+                log_event(f"REJECT ({sym}): Protected order requires a valid live price.")
                 return
+            buf = max(prot_pct, 1.0) / 100.0
+            raw_price = ltp * (1 + buf) if action == "BUY" else ltp * (1 - buf)
+            limit_price = round(round(max(raw_price, tick) / tick) * tick, 4)
+            final_order_type = "LIMIT"
 
         payload = {
             "exchange": exch,
@@ -491,27 +495,25 @@ try:
         STRATEGY_CONFIG["armed"] = False
 
     def trigger_all_portfolio_exits():
-        global ORDER_FIRED
-        ORDER_FIRED = True
-        globals()["LAST_EXIT_FIRE_TIME"] = time.time()
+        global EXIT_IN_PROGRESS
+        with EXIT_STATE_LOCK:
+            if EXIT_IN_PROGRESS:
+                log_event("Exit already in progress; duplicate close suppressed.")
+                return
+            if not ACTIVE_POSITIONS:
+                log_event("Exit requested with no open positions.")
+                return
+            EXIT_IN_PROGRESS = True
+
         threads = []
-        for t, p in ACTIVE_POSITIONS.items():
+        for t, p in list(ACTIVE_POSITIONS.items()):
             action = "SELL" if p["type"] == "LONG" else "BUY"
             ltp = LIVE_LEG_PRICES.get(t, p["entry_price"])
             exit_order_type = "PROTECTED" if p["exchange"] == "MCX" or p["symbol"].endswith(("CE", "PE")) else "MARKET"
             th = threading.Thread(
                 target=fire_order,
-                args=(
-                    t,
-                    p["exchange"],
-                    p["symbol"],
-                    action,
-                    p["qty"],
-                    p["product"],
-                    ltp,
-                    max(RISK_CONFIG["protection_buffer_pct"], 3.0),
-                    exit_order_type,
-                ),
+                args=(t, p["exchange"], p["symbol"], action, p["qty"], p["product"], ltp,
+                      max(RISK_CONFIG["protection_buffer_pct"], 3.0), exit_order_type),
             )
             threads.append(th)
             th.start()
@@ -521,7 +523,7 @@ try:
 
     def on_message(ws, message):
         global CURRENT_COMBO_PREMIUM, CURRENT_COMBO_VWAP, CURRENT_GAP, NET_PORTFOLIO_PNL
-        global CURRENT_ACTIVE_SL, ORDER_FIRED, CURRENT_PREM_DIFF, CURRENT_COMBO_IV
+        global CURRENT_ACTIVE_SL, EXIT_IN_PROGRESS, CURRENT_PREM_DIFF, CURRENT_COMBO_IV
         global LIVE_MASTER_UND_LTP, LIVE_MASTER_UND_VWAP, LAST_CHART_UPDATE
 
         if isinstance(message, bytes):
@@ -574,6 +576,9 @@ try:
                     CHART_VWAP.append(CURRENT_COMBO_VWAP)
                     CHART_MASTER.append(LIVE_MASTER_UND_LTP)
                     CHART_PNL.append(NET_PORTFOLIO_PNL)
+                    if len(CHART_LABELS) > 2000:
+                        for series in (CHART_LABELS, CHART_PREMIUM, CHART_IV, CHART_VWAP, CHART_MASTER, CHART_PNL):
+                            del series[:-2000]
                     LAST_CHART_UPDATE = curr_time
 
                 if len(enabled_legs) > 0 and STRATEGY_CONFIG["armed"] and not STRATEGY_CONFIG["fired"]:
@@ -604,6 +609,17 @@ try:
                         trig = ul > 0 and ((c == ">=" and ul >= tg) or (c == "<=" and ul <= tg) or (c == ">" and ul > tg) or (c == "<" and ul < tg))
                         active_evals.append((STRATEGY_CONFIG.get("und_ltp_gate", "AND"), trig))
 
+                    if STRATEGY_CONFIG["use_und_vwap_cond"] and LIVE_MASTER_UND_LTP > 0 and LIVE_MASTER_UND_VWAP > 0:
+                        direction = STRATEGY_CONFIG.get("und_vwap_dir", ">")
+                        trig = (direction == ">" and LIVE_MASTER_UND_LTP > LIVE_MASTER_UND_VWAP) or (direction == "<" and LIVE_MASTER_UND_LTP < LIVE_MASTER_UND_VWAP)
+                        active_evals.append((STRATEGY_CONFIG.get("und_vwap_gate", "AND"), trig))
+
+                    if STRATEGY_CONFIG["use_iv_cond"]:
+                        comparator, target = STRATEGY_CONFIG.get("iv_cond", ">="), float(STRATEGY_CONFIG.get("iv_target", 0))
+                        iv = CURRENT_COMBO_IV
+                        trig = iv > 0 and ((comparator == ">=" and iv >= target) or (comparator == "<=" and iv <= target) or (comparator == ">" and iv > target) or (comparator == "<" and iv < target))
+                        active_evals.append((STRATEGY_CONFIG.get("iv_gate", "AND"), trig))
+
                     if active_evals:
                         final_trigger = active_evals[0][1]
                         for gate, res in active_evals[1:]:
@@ -614,10 +630,7 @@ try:
                             execute_multi_leg_strategy()
 
                 if token in ACTIVE_POSITIONS and "last_price" in tick:
-                    if ORDER_FIRED and "LAST_EXIT_FIRE_TIME" in globals() and time.time() - globals()["LAST_EXIT_FIRE_TIME"] > 15.0:
-                        ORDER_FIRED = False
-
-                    if not ORDER_FIRED:
+                    if not EXIT_IN_PROGRESS:
                         current_pnl, all_legs_ticked = 0.0, True
                         for t, p in ACTIVE_POSITIONS.items():
                             ltp = LIVE_LEG_PRICES.get(t, 0.0)
@@ -667,64 +680,27 @@ try:
         sub_tokens = [l["token"] for l in STRATEGY_LEGS if l.get("enabled", True) and "token" in l]
         if STRATEGY_CONFIG.get("master_und_token"): sub_tokens.append(STRATEGY_CONFIG["master_und_token"])
         sub_tokens.extend(list(ACTIVE_POSITIONS.keys()))
-        unique = list(set(sub_tokens))
-        if unique:
-            try:
-                ws.send(json.dumps({"a": "subscribe", "v": unique}))
-                ws.send(json.dumps({"a": "mode", "v": ["full", unique]}))
-            except Exception: pass
+        subscribe_tokens(sub_tokens)
 
     def on_error(ws, err):
-        log_event(f"WS Error: {err}")
+        # Some websocket-client errors contain the full URL, including the session token.
+        log_event("WebSocket error; check connection and session validity.")
 
     def on_close(ws, c, m):
         DIAGNOSTICS["ws_status"] = "DISCONNECTED"
 
-    FALLBACK_IPS = [
-        "104.18.23.45",
-        "104.18.22.45",
-        "172.67.74.226"
-    ]
-
-    def resolve_target_ip(domain="ws.zerodha.com"):
-        # 1. Primary: Google DoH
+    def subscribe_tokens(tokens):
+        ws = stealth_ws
+        if not tokens or not ws or not ws.sock or not ws.sock.connected:
+            return
+        unique = list({int(token) for token in tokens if token})
+        if not unique:
+            return
         try:
-            res = requests.get(f"https://dns.google/resolve?name={domain}&type=A", timeout=4).json()
-            for answer in res.get("Answer", []):
-                if answer.get("type") == 1:
-                    return answer.get("data")
-        except Exception:
-            pass
-
-        # 2. Secondary: Cloudflare 1.1.1.1 DoH direct IP
-        try:
-            res = requests.get(
-                f"https://1.1.1.1/dns-query?name={domain}&type=A",
-                headers={"accept": "application/dns-json"},
-                verify=False,
-                timeout=4
-            ).json()
-            for answer in res.get("Answer", []):
-                if answer.get("type") == 1:
-                    return answer.get("data")
-        except Exception:
-            pass
-
-        # 3. Tertiary: Responsive Anycast Health Check
-        for ip in FALLBACK_IPS:
-            try:
-                test = requests.head(
-                    f"https://{ip}/",
-                    headers={"Host": "kite.zerodha.com", "User-Agent": "Mozilla/5.0"},
-                    timeout=2.5,
-                    verify=False
-                )
-                if test.status_code < 500:
-                    return ip
-            except Exception:
-                continue
-
-        return FALLBACK_IPS[0]
+            ws.send(json.dumps({"a": "subscribe", "v": unique}))
+            ws.send(json.dumps({"a": "mode", "v": ["full", unique]}))
+        except Exception as e:
+            log_event(f"Subscription update failed: {str(e)[:40]}")
 
     def start_websocket_stream():
         global stealth_ws
@@ -734,66 +710,43 @@ try:
                     time.sleep(5)
                     continue
 
-                # 1. Self-Healing DNS Bypass
-                resolved_ip = resolve_target_ip()
-                
-                # 2. Build URL
-                encoded_token = urllib.parse.quote(urllib.parse.unquote(API_CONFIG["enc_token"]))
-                ws_url = (
-                    f"wss://{resolved_ip}/?api_key=kitefront"
-                    f"&user_id={API_CONFIG['user_id']}"
-                    f"&enctoken={encoded_token}"
-                    f"&uid={int(time.time()*1000)}"
-                    "&user-agent=kite3-web&version=3.0.0"
-                )
-                
-                # 3. Forge WAF Bypass Headers
-                custom_headers = [
-                    "Host: ws.zerodha.com",
-                    "Origin: https://kite.zerodha.com",
-                    "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                ]
-
-                # 4. Explicit SSL Context for Android Compatibility
-                import ssl
-                ssl_ctx = ssl.create_default_context()
-                ssl_ctx.check_hostname = False
-                ssl_ctx.verify_mode = ssl.CERT_NONE
-
+                query = urllib.parse.urlencode({
+                    "api_key": "kitefront",
+                    "user_id": API_CONFIG["user_id"],
+                    "enctoken": API_CONFIG["enc_token"],
+                    "uid": int(time.time() * 1000),
+                    "user-agent": "kite3-web",
+                    "version": "3.0.0",
+                })
+                ws_url = f"wss://ws.zerodha.com/?{query}"
                 stealth_ws = websocket.WebSocketApp(
                     ws_url,
-                    header=custom_headers,
+                    header=[
+                        "Origin: https://kite.zerodha.com",
+                        "User-Agent: Mozilla/5.0",
+                    ],
                     on_open=on_open,
                     on_message=on_message,
                     on_error=on_error,
                     on_close=on_close,
                 )
-                
-                # 5. Run with SNI Injection and UTF-8 optimization
-                stealth_ws.run_forever(
-                    ping_interval=30, 
-                    ping_timeout=10,
-                    sslopt={
-                        "cert_reqs": ssl.CERT_NONE, 
-                        "check_hostname": False,
-                        "server_hostname": "ws.zerodha.com",  # Critical for SNI
-                        "context": ssl_ctx
-                    },
-                    skip_utf8_validation=True  # Performance boost
-                )
-            except Exception as e: 
-                log_event(f"WS Outer Loop Error: {str(e)[:40]}")
+                # Keep websocket-client's normal certificate and hostname verification enabled.
+                stealth_ws.run_forever(ping_interval=30, ping_timeout=10)
+            except Exception:
+                # Avoid logging request URLs, which can contain the session token.
+                log_event("WebSocket connection failed; check connectivity and session validity.")
             time.sleep(5)
 
     def portfolio_sync_thread():
-        global ACTIVE_POSITIONS
+        global ACTIVE_POSITIONS, EXIT_IN_PROGRESS
         while True:
             time.sleep(10)
             if not API_CONFIG["is_connected"]: continue
             try:
                 res = KITE_SESSION.get(
                     "https://kite.zerodha.com/oms/portfolio/positions",
-                    headers={"authorization": f"enctoken {API_CONFIG['enc_token']}"}
+                    headers={"authorization": f"enctoken {API_CONFIG['enc_token']}"},
+                    timeout=8,
                 )
                 if res.status_code == 200:
                     server_pos = {}
@@ -809,13 +762,26 @@ try:
                                 "product": p.get("product", "NRML"),
                             }
                     ACTIVE_POSITIONS = server_pos
+                    if not server_pos:
+                        with EXIT_STATE_LOCK:
+                            EXIT_IN_PROGRESS = False
                     tokens_to_sub = list(server_pos.keys())
-                    if tokens_to_sub and stealth_ws and stealth_ws.sock and stealth_ws.sock.connected:
-                        stealth_ws.send(json.dumps({"a": "subscribe", "v": tokens_to_sub}))
-                        stealth_ws.send(json.dumps({"a": "mode", "v": ["full", tokens_to_sub]}))
-            except Exception: pass
+                    subscribe_tokens(tokens_to_sub)
+            except Exception as e:
+                log_event(f"Portfolio sync failed: {str(e)[:40]}")
 
     app = Flask(__name__)
+
+    @app.before_request
+    def restrict_dashboard_to_local_device():
+        allowed_hosts = {f"127.0.0.1:{FLASK_PORT}", f"localhost:{FLASK_PORT}"}
+        if request.host not in allowed_hosts or request.remote_addr not in {"127.0.0.1", "::1"}:
+            return jsonify({"status": "error", "message": "Local device access only."}), 403
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            origin = request.headers.get("Origin")
+            if origin and origin not in {f"http://127.0.0.1:{FLASK_PORT}", f"http://localhost:{FLASK_PORT}"}:
+                return jsonify({"status": "error", "message": "Cross-origin request blocked."}), 403
+
     log = logging.getLogger("werkzeug")
     log.setLevel(logging.ERROR)
 
@@ -1025,6 +991,8 @@ try:
                   <div class="card shadow-sm h-100">
                      <div class="card-header border-secondary text-warning fw-bold">Multi-Gate Trigger Logic</div>
                      <div class="card-body">
+                        <label class="form-label small">Combine enabled conditions</label>
+                        <select id="gateLogic" class="form-select form-select-sm mb-2"><option value="AND">All enabled gates must match (AND)</option><option value="OR">Any enabled gate may match (OR)</option></select>
                         <div class="form-check form-switch mb-2">
                            <input class="form-check-input" type="checkbox" id="gatePremToggle">
                            <label class="form-check-label small" for="gatePremToggle">Trigger on Combo Premium</label>
@@ -1045,6 +1013,32 @@ try:
                            <label class="form-check-label small" for="gateVwapToggle">Trigger on VWAP Crossover</label>
                         </div>
                         <select id="gateVwapDir" class="form-select form-select-sm mb-2"><option value="<">Premium &lt; VWAP</option><option value=">">Premium &gt; VWAP</option></select>
+                        <div class="form-check form-switch mb-2">
+                           <input class="form-check-input" type="checkbox" id="gateDiffToggle">
+                           <label class="form-check-label small" for="gateDiffToggle">Trigger when first two leg prices differ by at most</label>
+                        </div>
+                        <input type="number" id="gateDiffVal" class="form-control form-control-sm mb-2" value="5" min="0" step="0.1">
+                        <div class="form-check form-switch mb-2">
+                           <input class="form-check-input" type="checkbox" id="gateUnderlyingToggle">
+                           <label class="form-check-label small" for="gateUnderlyingToggle">Trigger on underlying LTP</label>
+                        </div>
+                        <div class="input-group input-group-sm mb-2">
+                           <select id="gateUnderlyingCond" class="form-select"><option value=">=">&gt;=</option><option value="<=">&lt;=</option></select>
+                           <input type="number" id="gateUnderlyingVal" class="form-control" value="22000" min="0">
+                        </div>
+                        <div class="form-check form-switch mb-2">
+                           <input class="form-check-input" type="checkbox" id="gateUnderlyingVwapToggle">
+                           <label class="form-check-label small" for="gateUnderlyingVwapToggle">Trigger on underlying VWAP</label>
+                        </div>
+                        <select id="gateUnderlyingVwapDir" class="form-select form-select-sm mb-2"><option value=">">Underlying &gt; VWAP</option><option value="<">Underlying &lt; VWAP</option></select>
+                        <div class="form-check form-switch mb-2">
+                           <input class="form-check-input" type="checkbox" id="gateIvToggle">
+                           <label class="form-check-label small" for="gateIvToggle">Trigger on combo IV (%)</label>
+                        </div>
+                        <div class="input-group input-group-sm mb-2">
+                           <select id="gateIvCond" class="form-select"><option value=">=">&gt;=</option><option value="<=">&lt;=</option></select>
+                           <input type="number" id="gateIvVal" class="form-control" value="15" min="0" step="0.1">
+                        </div>
                         <button class="btn btn-sm btn-warning fw-bold mt-2" onclick="saveStrategy()">Save Trigger Conditions</button>
                      </div>
                   </div>
@@ -1081,6 +1075,7 @@ try:
 
     <script>
         let chartObj = null;
+        const escapeHtml = value => String(value).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
         function initChart() {
             const ctx = document.getElementById('algoChart').getContext('2d');
             chartObj = new Chart(ctx, {
@@ -1156,8 +1151,8 @@ try:
                     const statusBadge = l.enabled ? '<span class="badge bg-success">ON</span>' : '<span class="badge bg-secondary">OFF</span>';
                     legsHtml += `<tr>
                         <td><button class="btn btn-sm p-0" onclick="toggleLeg(${idx})">${statusBadge}</button></td>
-                        <td class="fw-bold">${l.symbol}</td>
-                        <td class="${sideColor} fw-bold">${l.type}</td>
+                        <td class="fw-bold">${escapeHtml(l.symbol)}</td>
+                        <td class="${sideColor} fw-bold">${escapeHtml(l.type)}</td>
                         <td>${l.qty}</td>
                         <td class="text-cyan">${l.ltp.toFixed(2)}</td>
                         <td><button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="deleteLeg(${idx})">✕</button></td>
@@ -1170,8 +1165,8 @@ try:
                     const sideColor = p.type === 'LONG' ? 'text-primary' : 'text-danger';
                     const pnlColor = p.pnl >= 0 ? 'text-success' : 'text-danger';
                     posHtml += `<tr>
-                        <td class="fw-bold">${p.symbol}</td>
-                        <td class="${sideColor} fw-bold">${p.type}</td>
+                        <td class="fw-bold">${escapeHtml(p.symbol)}</td>
+                        <td class="${sideColor} fw-bold">${escapeHtml(p.type)}</td>
                         <td>${p.qty}</td>
                         <td>${p.entry_price.toFixed(2)}</td>
                         <td class="text-cyan">${p.ltp.toFixed(2)}</td>
@@ -1184,9 +1179,13 @@ try:
 
                 const logsDiv = document.getElementById('logsContainer');
                 if(data.logs && data.logs.length > 0) {
-                    logsDiv.innerHTML = data.logs.map(log => `<div>> ${log}</div>`).join('');
+                    logsDiv.replaceChildren(...data.logs.map(log => {
+                        const line = document.createElement('div');
+                        line.textContent = `> ${log}`;
+                        return line;
+                    }));
                 }
-            } catch (err) {}
+            } catch (err) { console.error('Dashboard update failed:', err); }
         }
 
         async function submitAuth() {
@@ -1199,8 +1198,9 @@ try:
                 body: JSON.stringify({user_id: uid, enc_token: enc})
             });
             const d = await res.json();
+            document.getElementById('inputEncToken').value = '';
             alert(d.message);
-            bootstrap.Modal.getInstance(document.getElementById('loginModal')).hide();
+            if (res.ok) bootstrap.Modal.getInstance(document.getElementById('loginModal')).hide();
         }
 
         async function addLeg() {
@@ -1223,8 +1223,17 @@ try:
         async function toggleLeg(idx) { await fetch(`/api/toggle_leg/${idx}`, {method: 'POST'}); }
         async function deleteLeg(idx) { await fetch(`/api/delete_leg/${idx}`, {method: 'POST'}); }
         async function clearLegs() { await fetch('/api/clear_legs', {method: 'POST'}); }
-        async function toggleArm() { await fetch('/api/arm_strategy', {method: 'POST'}); }
-        async function panicExit() { if(confirm("Flatten all open positions immediately?")) await fetch('/api/panic_exit', {method: 'POST'}); }
+        async function toggleArm() {
+            const res = await fetch('/api/arm_strategy', {method: 'POST'});
+            const result = await res.json();
+            if (!res.ok) alert(result.message || 'Could not arm strategy.');
+        }
+        async function panicExit() {
+            if (!confirm("Flatten all open positions immediately?")) return;
+            const res = await fetch('/api/panic_exit', {method: 'POST'});
+            const result = await res.json();
+            if (!res.ok) alert(result.message || 'Exit request failed.');
+        }
         async function importPositions() {
             const res = await fetch('/api/import_positions', {method: 'POST'});
             const d = await res.json();
@@ -1243,6 +1252,8 @@ try:
                     auto_squareoff: document.getElementById('riskSquareoffToggle').checked
                 })
             });
+            const result = await res.json();
+            if (!res.ok) return alert(result.message || "Risk settings were rejected.");
             alert("Risk configuration updated.");
         }
 
@@ -1257,9 +1268,28 @@ try:
                     use_time_cond: document.getElementById('gateTimeToggle').checked,
                     target_time: document.getElementById('gateTimeVal').value,
                     use_vwap_cond: document.getElementById('gateVwapToggle').checked,
-                    vwap_direction: document.getElementById('gateVwapDir').value
+                    vwap_direction: document.getElementById('gateVwapDir').value,
+                    use_diff_cond: document.getElementById('gateDiffToggle').checked,
+                    diff_target: parseFloat(document.getElementById('gateDiffVal').value),
+                    use_underlying_cond: document.getElementById('gateUnderlyingToggle').checked,
+                    und_cond: document.getElementById('gateUnderlyingCond').value,
+                    und_target: parseFloat(document.getElementById('gateUnderlyingVal').value),
+                    use_und_vwap_cond: document.getElementById('gateUnderlyingVwapToggle').checked,
+                    und_vwap_dir: document.getElementById('gateUnderlyingVwapDir').value,
+                    use_iv_cond: document.getElementById('gateIvToggle').checked,
+                    iv_cond: document.getElementById('gateIvCond').value,
+                    iv_target: parseFloat(document.getElementById('gateIvVal').value),
+                    prem_gate: document.getElementById('gateLogic').value,
+                    diff_gate: document.getElementById('gateLogic').value,
+                    vwap_gate: document.getElementById('gateLogic').value,
+                    time_gate: document.getElementById('gateLogic').value,
+                    und_ltp_gate: document.getElementById('gateLogic').value,
+                    und_vwap_gate: document.getElementById('gateLogic').value,
+                    iv_gate: document.getElementById('gateLogic').value
                 })
             });
+            const result = await res.json();
+            if (!res.ok) return alert(result.message || "Trigger settings were rejected.");
             alert("Trigger conditions saved.");
         }
 
@@ -1278,18 +1308,55 @@ try:
 
     @app.route("/api/auth", methods=["POST"])
     def api_auth():
-        data = request.json
-        API_CONFIG["user_id"] = data.get("user_id", "").strip()
-        API_CONFIG["enc_token"] = data.get("enc_token", "").strip()
-        API_CONFIG["is_connected"] = True
-        log_event(f"User {API_CONFIG['user_id']} authenticated.")
-        return jsonify({"status": "success", "message": "Credentials verified! Engine streaming."})
+        data = request.get_json(silent=True) or {}
+        user_id = str(data.get("user_id", "")).strip()
+        enc_token = str(data.get("enc_token", "")).strip()
+        if not user_id or not enc_token or len(user_id) > 64 or len(enc_token) > 4096:
+            return jsonify({"status": "error", "message": "Enter a valid user ID and session token."}), 400
+
+        API_CONFIG.update({"is_connected": False, "enc_token": "", "user_id": ""})
+        old_ws = stealth_ws
+        if old_ws and old_ws.sock and old_ws.sock.connected:
+            old_ws.close()
+        try:
+            check = KITE_SESSION.get(
+                "https://kite.zerodha.com/oms/user/profile/full",
+                headers={"authorization": f"enctoken {enc_token}"},
+                timeout=8,
+            )
+            response_data = check.json()
+            if check.status_code != 200 or not isinstance(response_data, dict) or response_data.get("status") != "success":
+                return jsonify({"status": "error", "message": "Broker rejected the session token."}), 401
+            profile = response_data.get("data", {})
+            returned_user = str(profile.get("user_id", "")).strip() if isinstance(profile, dict) else ""
+            if not returned_user or returned_user.lower() != user_id.lower():
+                return jsonify({"status": "error", "message": "Broker user ID did not match the entered ID."}), 401
+        except requests.RequestException:
+            return jsonify({"status": "error", "message": "Could not reach the broker to verify credentials."}), 503
+        except (ValueError, TypeError):
+            return jsonify({"status": "error", "message": "Broker returned an invalid authentication response."}), 502
+
+        API_CONFIG.update({"user_id": user_id, "enc_token": enc_token, "is_connected": True})
+        log_event("Broker session verified; credentials were not logged.")
+        return jsonify({"status": "success", "message": "Broker session verified. Streaming started."})
 
     @app.route("/api/add_leg", methods=["POST"])
     def api_add_leg():
-        data = request.json
-        exch = data.get("exchange", "NFO")
-        sym = data.get("symbol", "").strip().upper()
+        data = request.get_json(silent=True) or {}
+        exch = str(data.get("exchange", "NFO")).strip().upper()
+        sym = str(data.get("symbol", "")).strip().upper()
+        if exch not in {"NFO", "BFO", "MCX", "CDS"}:
+            return jsonify({"status": "error", "message": "Unsupported exchange."}), 400
+        try:
+            qty = int(data.get("quantity", 75))
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "Quantity must be a positive integer."}), 400
+        side = str(data.get("transaction_type", "SELL")).upper()
+        order_type = str(data.get("order_type", "SMART")).upper()
+        if qty <= 0 or qty > 1000000:
+            return jsonify({"status": "error", "message": "Quantity is outside the allowed range."}), 400
+        if side not in {"BUY", "SELL"} or order_type not in {"SMART", "MARKET", "PROTECTED"}:
+            return jsonify({"status": "error", "message": "Invalid side or order type."}), 400
         key = f"{exch}:{sym}"
         token = INSTRUMENT_MAP.get(key)
         if not token:
@@ -1306,16 +1373,17 @@ try:
         STRATEGY_LEGS.append({
             "exchange": exch,
             "tradingsymbol": sym,
-            "transaction_type": data.get("transaction_type", "SELL"),
-            "quantity": int(data.get("quantity", 75)),
+            "transaction_type": side,
+            "quantity": qty,
             "product": "NRML",
-            "order_type": data.get("order_type", "SMART"),
+            "order_type": order_type,
             "opt_type": opt_type,
             "strike": strike,
             "exp_date": exp_date_str,
             "token": token,
             "enabled": True,
         })
+        subscribe_tokens([token])
         threading.Thread(target=rebuild_historical_chart, daemon=True).start()
         log_event(f"Leg Added: {sym}")
         return jsonify({"status": "ok"})
@@ -1332,6 +1400,8 @@ try:
     def api_toggle_leg(idx):
         if 0 <= idx < len(STRATEGY_LEGS):
             STRATEGY_LEGS[idx]["enabled"] = not STRATEGY_LEGS[idx]["enabled"]
+            if STRATEGY_LEGS[idx]["enabled"]:
+                subscribe_tokens([STRATEGY_LEGS[idx]["token"]])
             threading.Thread(target=rebuild_historical_chart, daemon=True).start()
         return jsonify({"status": "ok"})
 
@@ -1344,29 +1414,112 @@ try:
 
     @app.route("/api/update_risk", methods=["POST"])
     def api_update_risk():
-        d = request.json
-        RISK_CONFIG.update(d)
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"status": "error", "message": "Invalid risk settings."}), 400
+        allowed = {"target_pnl", "stoploss_pnl", "tsl_enabled", "tsl_gap", "auto_squareoff"}
+        if set(data) - allowed:
+            return jsonify({"status": "error", "message": "Unsupported risk setting."}), 400
+        numeric_rules = {"target_pnl": lambda x: x >= 0, "stoploss_pnl": lambda x: x <= 0, "tsl_gap": lambda x: x > 0}
+        updates = {}
+        try:
+            for key, predicate in numeric_rules.items():
+                if key in data:
+                    value = float(data[key])
+                    if not math.isfinite(value) or not predicate(value):
+                        raise ValueError(key)
+                    updates[key] = value
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "Risk amounts must be finite and within valid ranges."}), 400
+        for key in ("tsl_enabled", "auto_squareoff"):
+            if key in data:
+                if not isinstance(data[key], bool):
+                    return jsonify({"status": "error", "message": f"{key} must be true or false."}), 400
+                updates[key] = data[key]
+        RISK_CONFIG.update(updates)
         log_event("Risk parameters updated.")
         return jsonify({"status": "ok"})
 
     @app.route("/api/update_strategy", methods=["POST"])
     def api_update_strategy():
-        d = request.json
-        STRATEGY_CONFIG.update(d)
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"status": "error", "message": "Invalid trigger settings."}), 400
+        numeric = {"target_premium", "diff_target", "und_target", "iv_target"}
+        booleans = {"use_premium_cond", "use_diff_cond", "use_vwap_cond", "use_time_cond", "use_underlying_cond", "use_und_vwap_cond", "use_iv_cond"}
+        enums = {
+            "condition": {">=", "<=", ">", "<"}, "und_cond": {">=", "<=", ">", "<"},
+            "iv_cond": {">=", "<=", ">", "<"}, "vwap_direction": {">", "<"},
+            "und_vwap_dir": {">", "<"}, "prem_gate": {"AND", "OR"},
+            "diff_gate": {"AND", "OR"}, "vwap_gate": {"AND", "OR"},
+            "time_gate": {"AND", "OR"}, "und_ltp_gate": {"AND", "OR"},
+            "und_vwap_gate": {"AND", "OR"}, "iv_gate": {"AND", "OR"},
+        }
+        allowed = numeric | booleans | set(enums) | {"target_time", "risk_free_rate"}
+        if set(data) - allowed:
+            return jsonify({"status": "error", "message": "Unsupported trigger setting."}), 400
+        updates = {}
+        try:
+            for key in numeric | {"risk_free_rate"}:
+                if key in data:
+                    value = float(data[key])
+                    if not math.isfinite(value) or value < 0 or (key == "risk_free_rate" and value > 100):
+                        raise ValueError(key)
+                    updates[key] = value
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "Trigger values must be finite and non-negative."}), 400
+        for key in booleans:
+            if key in data:
+                if not isinstance(data[key], bool):
+                    return jsonify({"status": "error", "message": f"{key} must be true or false."}), 400
+                updates[key] = data[key]
+        for key, choices in enums.items():
+            if key in data:
+                value = str(data[key]).upper() if "gate" in key else str(data[key])
+                if value not in choices:
+                    return jsonify({"status": "error", "message": f"Invalid value for {key}."}), 400
+                updates[key] = value
+        if "target_time" in data:
+            try:
+                datetime.datetime.strptime(str(data["target_time"]), "%H:%M")
+            except ValueError:
+                return jsonify({"status": "error", "message": "Trigger time must use HH:MM."}), 400
+            updates["target_time"] = str(data["target_time"])
+        STRATEGY_CONFIG.update(updates)
         log_event("Trigger conditions updated.")
         return jsonify({"status": "ok"})
 
     @app.route("/api/arm_strategy", methods=["POST"])
     def api_arm_strategy():
-        STRATEGY_CONFIG["armed"] = not STRATEGY_CONFIG["armed"]
+        if STRATEGY_CONFIG["armed"]:
+            STRATEGY_CONFIG["armed"] = False
+            log_event("Strategy disarmed.")
+            return jsonify({"status": "ok", "armed": False})
+        if not API_CONFIG["is_connected"]:
+            return jsonify({"status": "error", "message": "Verify broker credentials before arming."}), 409
+        if not any(leg.get("enabled", True) for leg in STRATEGY_LEGS):
+            return jsonify({"status": "error", "message": "Add at least one enabled strategy leg."}), 409
+        gates = ("use_premium_cond", "use_diff_cond", "use_vwap_cond", "use_time_cond", "use_underlying_cond", "use_und_vwap_cond", "use_iv_cond")
+        if not any(STRATEGY_CONFIG.get(gate, False) for gate in gates):
+            return jsonify({"status": "error", "message": "Enable at least one trigger condition before arming."}), 409
+        if (STRATEGY_CONFIG.get("use_underlying_cond") or STRATEGY_CONFIG.get("use_und_vwap_cond")) and not STRATEGY_CONFIG.get("master_und_token"):
+            return jsonify({"status": "error", "message": "Underlying instrument data is not ready yet."}), 409
+        STRATEGY_CONFIG["armed"] = True
         STRATEGY_CONFIG["fired"] = False
-        log_event(f"Strategy Armed: {STRATEGY_CONFIG['armed']}")
-        return jsonify({"status": "ok", "armed": STRATEGY_CONFIG["armed"]})
+        log_event("Strategy armed.")
+        return jsonify({"status": "ok", "armed": True})
 
     @app.route("/api/panic_exit", methods=["POST"])
     def api_panic_exit():
+        global EXIT_IN_PROGRESS
+        if not API_CONFIG["is_connected"]:
+            return jsonify({"status": "error", "message": "Verify broker credentials before requesting an exit."}), 409
+        if not ACTIVE_POSITIONS:
+            return jsonify({"status": "error", "message": "No open positions are currently synced."}), 409
+        with EXIT_STATE_LOCK:
+            EXIT_IN_PROGRESS = False
         RISK_CONFIG["panic_exit"] = True
-        log_event("PANIC EXIT REQUESTED.")
+        log_event("PANIC EXIT REQUESTED; explicit retry enabled.")
         return jsonify({"status": "ok"})
 
     @app.route("/api/import_positions", methods=["POST"])
@@ -1488,7 +1641,7 @@ try:
         })
 
     def run_flask():
-        app.run(host="0.0.0.0", port=FLASK_PORT, debug=False, use_reloader=False, threaded=True)
+        app.run(host="127.0.0.1", port=FLASK_PORT, debug=False, use_reloader=False, threaded=True)
 
     SUCCESS_LOAD = True
 
