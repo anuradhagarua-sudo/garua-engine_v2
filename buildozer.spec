@@ -6,7 +6,7 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,html,css,js
 version = 25.8
 
-requirements = python3==3.11.4,kivy==2.3.0,openssl,flask,markupsafe,werkzeug,jinja2,requests,urllib3,charset-normalizer,certifi,idna,websocket-client,pytz,python-dateutil,six,simplejson,kiteconnect,nest_asyncio
+requirements = python3==3.11.4,hostpython3==3.11.4,kivy==2.3.0,openssl,flask,markupsafe,werkzeug,jinja2,requests,urllib3,charset-normalizer,certifi,idna,websocket-client,pytz,python-dateutil,six,simplejson,kiteconnect,nest_asyncio
 
 orientation = portrait
 fullscreen = 0
