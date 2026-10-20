@@ -1344,9 +1344,15 @@ try:
         except requests.exceptions.Timeout:
             log_event("Broker login failed: connection timeout.")
             return jsonify({"status": "error", "message": "Zerodha did not respond in time. Check internet access and retry."}), 504
-        except requests.exceptions.ConnectionError:
-            log_event("Broker login failed: network or DNS connection error.")
-            return jsonify({"status": "error", "message": "Could not connect to kite.zerodha.com. Check internet/DNS, then retry."}), 503
+        except requests.exceptions.ConnectionError as e:
+            # Show the transport failure (DNS, reset, etc.) without ever exposing credentials.
+            detail = " ".join(str(e).split())
+            for secret in (enc_token, user_id):
+                if secret:
+                    detail = detail.replace(secret, "[redacted]")
+            detail = detail[:180] or "connection failed"
+            log_event(f"Broker login network error: {detail}")
+            return jsonify({"status": "error", "message": f"Could not connect to Zerodha: {detail}"}), 503
         except requests.RequestException as e:
             log_event(f"Broker login failed: request setup error ({type(e).__name__}).")
             return jsonify({"status": "error", "message": f"Broker request failed ({type(e).__name__}). Check the entered credentials and retry."}), 400
