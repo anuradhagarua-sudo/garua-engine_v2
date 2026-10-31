@@ -29,7 +29,10 @@ void main() {
         underlyingEnabled: true,
         underlyingThreshold: 20000,
       );
-      expect(config.matches(const StrategySnapshot(comboPremium: 120)), isFalse);
+      expect(
+        config.matches(const StrategySnapshot(comboPremium: 120)),
+        isFalse,
+      );
     });
 
     test('OR matches when one active gate is true', () {
@@ -40,11 +43,19 @@ void main() {
         ivEnabled: true,
         ivThreshold: 20,
       );
-      expect(config.matches(const StrategySnapshot(comboPremium: 120, comboIv: 10)), isTrue);
+      expect(
+        config.matches(const StrategySnapshot(comboPremium: 120, comboIv: 10)),
+        isTrue,
+      );
     });
 
     test('no enabled gates never triggers', () {
-      expect(const StrategyConfig().matches(const StrategySnapshot(comboPremium: 500)), isFalse);
+      expect(
+        const StrategyConfig().matches(
+          const StrategySnapshot(comboPremium: 500),
+        ),
+        isFalse,
+      );
     });
   });
 

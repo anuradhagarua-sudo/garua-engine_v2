@@ -7,7 +7,12 @@ void main() {
     await tester.pump();
 
     expect(find.text('Garua Engine'), findsOneWidget);
-    expect(find.textContaining('live market streaming and order execution are not enabled'), findsOneWidget);
+    expect(
+      find.textContaining(
+        'live market streaming and order execution are not enabled',
+      ),
+      findsOneWidget,
+    );
     expect(find.text('DISCONNECTED'), findsOneWidget);
   });
 }

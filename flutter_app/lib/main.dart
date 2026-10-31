@@ -58,9 +58,13 @@ class EngineHomePage extends StatefulWidget {
 class _EngineHomePageState extends State<EngineHomePage> {
   final BrokerSessionService _broker = BrokerSessionService();
   final TextEditingController _symbolController = TextEditingController();
-  final TextEditingController _quantityController = TextEditingController(text: '75');
+  final TextEditingController _quantityController = TextEditingController(
+    text: '75',
+  );
   final List<StrategyLeg> _legs = [];
-  final List<String> _events = ['Flutter interface started. Live trading is disabled.'];
+  final List<String> _events = [
+    'Flutter interface started. Live trading is disabled.',
+  ];
   int _tab = 0;
   bool _connected = false;
   bool _autoSquareoff = true;
@@ -122,92 +126,107 @@ class _EngineHomePageState extends State<EngineHomePage> {
       builder: (dialogContext) {
         final navigator = Navigator.of(dialogContext);
         return StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Zerodha session'),
-          content: SizedBox(
-            width: 460,
-            child: Form(
-              key: formKey,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text(
-                    'Enter credentials on this device only. The session token is stored in Android secure storage only after verification.',
-                  ),
-                  const SizedBox(height: 16),
-                  TextFormField(
-                    controller: userIdController,
-                    textCapitalization: TextCapitalization.characters,
-                    decoration: const InputDecoration(labelText: 'User ID'),
-                    validator: (value) => value == null || value.trim().isEmpty
-                        ? 'User ID is required'
-                        : null,
-                  ),
-                  const SizedBox(height: 12),
-                  TextFormField(
-                    controller: tokenController,
-                    obscureText: true,
-                    autocorrect: false,
-                    enableSuggestions: false,
-                    decoration: const InputDecoration(labelText: 'ENCTOKEN'),
-                    validator: (value) => value == null || value.trim().isEmpty
-                        ? 'Session token is required'
-                        : null,
-                  ),
-                  if (error != null) ...[
+          builder: (context, setDialogState) => AlertDialog(
+            title: const Text('Zerodha session'),
+            content: SizedBox(
+              width: 460,
+              child: Form(
+                key: formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Enter credentials on this device only. The session token is stored in Android secure storage only after verification.',
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: userIdController,
+                      textCapitalization: TextCapitalization.characters,
+                      decoration: const InputDecoration(labelText: 'User ID'),
+                      validator: (value) =>
+                          value == null || value.trim().isEmpty
+                          ? 'User ID is required'
+                          : null,
+                    ),
                     const SizedBox(height: 12),
-                    Text(error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                    TextFormField(
+                      controller: tokenController,
+                      obscureText: true,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      decoration: const InputDecoration(labelText: 'ENCTOKEN'),
+                      validator: (value) =>
+                          value == null || value.trim().isEmpty
+                          ? 'Session token is required'
+                          : null,
+                    ),
+                    if (error != null) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        error!,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ],
                   ],
-                ],
+                ),
               ),
             ),
+            actions: [
+              TextButton(
+                onPressed: busy ? null : () => navigator.pop(),
+                child: const Text('Cancel'),
+              ),
+              FilledButton.icon(
+                onPressed: busy
+                    ? null
+                    : () async {
+                        if (!formKey.currentState!.validate()) return;
+                        setDialogState(() {
+                          busy = true;
+                          error = null;
+                        });
+                        try {
+                          await _broker.connect(
+                            userId: userIdController.text,
+                            enctoken: tokenController.text,
+                          );
+                          if (!mounted) return;
+                          setState(() => _connected = true);
+                          _appendEvent('Broker session verified.');
+                          navigator.pop();
+                        } on BrokerSessionException catch (exception) {
+                          setDialogState(() {
+                            busy = false;
+                            error = exception.message;
+                          });
+                          _appendEvent(
+                            'Broker sign-in failed: ${exception.message}',
+                          );
+                        } catch (_) {
+                          setDialogState(() {
+                            busy = false;
+                            error =
+                                'Unexpected sign-in error. Check the network and try again.';
+                          });
+                          _appendEvent(
+                            'Broker sign-in failed with an unexpected error.',
+                          );
+                        } finally {
+                          tokenController.clear();
+                        }
+                      },
+                icon: busy
+                    ? const SizedBox.square(
+                        dimension: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.lock_open),
+                label: Text(busy ? 'Checking…' : 'Connect'),
+              ),
+            ],
           ),
-          actions: [
-            TextButton(
-              onPressed: busy ? null : () => navigator.pop(),
-              child: const Text('Cancel'),
-            ),
-            FilledButton.icon(
-              onPressed: busy
-                  ? null
-                  : () async {
-                      if (!formKey.currentState!.validate()) return;
-                      setDialogState(() {
-                        busy = true;
-                        error = null;
-                      });
-                      try {
-                        await _broker.connect(
-                          userId: userIdController.text,
-                          enctoken: tokenController.text,
-                        );
-                        if (!mounted) return;
-                        setState(() => _connected = true);
-                        _appendEvent('Broker session verified.');
-                        navigator.pop();
-                      } on BrokerSessionException catch (exception) {
-                        setDialogState(() {
-                          busy = false;
-                          error = exception.message;
-                        });
-                        _appendEvent('Broker sign-in failed: ${exception.message}');
-                      } catch (_) {
-                        setDialogState(() {
-                          busy = false;
-                          error = 'Unexpected sign-in error. Check the network and try again.';
-                        });
-                        _appendEvent('Broker sign-in failed with an unexpected error.');
-                      } finally {
-                        tokenController.clear();
-                      }
-                    },
-              icon: busy
-                  ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.lock_open),
-              label: Text(busy ? 'Checking…' : 'Connect'),
-            ),
-          ],
-        ),
         );
       },
     );
@@ -275,203 +294,333 @@ class _EngineHomePageState extends State<EngineHomePage> {
         selectedIndex: _tab,
         onDestinationSelected: (index) => setState(() => _tab = index),
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.dashboard_outlined), label: 'Dashboard'),
+          NavigationDestination(
+            icon: Icon(Icons.dashboard_outlined),
+            label: 'Dashboard',
+          ),
           NavigationDestination(icon: Icon(Icons.tune), label: 'Leg Builder'),
-          NavigationDestination(icon: Icon(Icons.shield_outlined), label: 'Risk & Gates'),
-          NavigationDestination(icon: Icon(Icons.receipt_long), label: 'Activity'),
+          NavigationDestination(
+            icon: Icon(Icons.shield_outlined),
+            label: 'Risk & Gates',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.receipt_long),
+            label: 'Activity',
+          ),
         ],
       ),
     );
   }
 
   Widget _dashboardPage() => ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            children: const [
-              _MetricCard(title: 'NET P&L', value: '—', icon: Icons.currency_rupee),
-              _MetricCard(title: 'COMBO PREMIUM', value: '—', icon: Icons.show_chart),
-              _MetricCard(title: 'MASTER LTP', value: '—', icon: Icons.insights),
-              _MetricCard(title: 'COMBO IV', value: '—', icon: Icons.percent),
+    padding: const EdgeInsets.all(16),
+    children: [
+      Wrap(
+        spacing: 12,
+        runSpacing: 12,
+        children: const [
+          _MetricCard(title: 'NET P&L', value: '—', icon: Icons.currency_rupee),
+          _MetricCard(
+            title: 'COMBO PREMIUM',
+            value: '—',
+            icon: Icons.show_chart,
+          ),
+          _MetricCard(title: 'MASTER LTP', value: '—', icon: Icons.insights),
+          _MetricCard(title: 'COMBO IV', value: '—', icon: Icons.percent),
+        ],
+      ),
+      const SizedBox(height: 16),
+      Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Active Positions',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'No positions loaded. Live portfolio sync is not enabled in the Flutter port.',
+              ),
             ],
           ),
-          const SizedBox(height: 16),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('Active Positions', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 12),
-                const Text('No positions loaded. Live portfolio sync is not enabled in the Flutter port.'),
-              ]),
-            ),
+        ),
+      ),
+      Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Strategy Legs',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              if (_legs.isEmpty)
+                const Text('No strategy legs added.')
+              else
+                ..._legs.map(
+                  (leg) => ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(leg.symbol),
+                    subtitle: Text('${leg.side} · ${leg.quantity}'),
+                    trailing: Icon(
+                      leg.enabled ? Icons.circle : Icons.circle_outlined,
+                      color: leg.enabled ? Colors.greenAccent : Colors.grey,
+                      size: 14,
+                    ),
+                  ),
+                ),
+            ],
           ),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('Strategy Legs', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 8),
-                if (_legs.isEmpty)
-                  const Text('No strategy legs added.')
-                else
-                  ..._legs.map((leg) => ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: Text(leg.symbol),
-                        subtitle: Text('${leg.side} · ${leg.quantity}'),
-                        trailing: Icon(leg.enabled ? Icons.circle : Icons.circle_outlined,
-                            color: leg.enabled ? Colors.greenAccent : Colors.grey, size: 14),
-                      )),
-              ]),
-            ),
+        ),
+      ),
+      Card(
+        color: _surface,
+        child: ListTile(
+          leading: const Icon(Icons.warning_amber, color: Colors.amber),
+          title: const Text('Live execution is intentionally locked'),
+          subtitle: const Text(
+            'The current enctoken endpoint is unofficial and has not been validated from this Flutter client.',
           ),
-          Card(
-            color: _surface,
-            child: ListTile(
-              leading: const Icon(Icons.warning_amber, color: Colors.amber),
-              title: const Text('Live execution is intentionally locked'),
-              subtitle: const Text('The current enctoken endpoint is unofficial and has not been validated from this Flutter client.'),
-            ),
-          ),
-        ],
-      );
+        ),
+      ),
+    ],
+  );
 
   Widget _builderPage() => ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                Text('Add Strategy Leg', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _symbolController,
-                  textCapitalization: TextCapitalization.characters,
-                  decoration: const InputDecoration(labelText: 'Trading symbol'),
-                ),
-                const SizedBox(height: 10),
-                DropdownButtonFormField<String>(
-                  initialValue: _draftSide,
-                  decoration: const InputDecoration(labelText: 'Side'),
-                  items: const [
-                    DropdownMenuItem(value: 'SELL', child: Text('SELL')),
-                    DropdownMenuItem(value: 'BUY', child: Text('BUY')),
-                  ],
-                  onChanged: (value) => setState(() => _draftSide = value ?? 'SELL'),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: _quantityController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Quantity'),
-                ),
-                const SizedBox(height: 12),
-                FilledButton.icon(
-                  onPressed: () {
-                    final symbol = _symbolController.text.trim().toUpperCase();
-                    final quantity = int.tryParse(_quantityController.text.trim());
-                    if (symbol.isEmpty || quantity == null || quantity <= 0) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Enter a symbol and positive quantity.')),
-                      );
-                      return;
-                    }
-                    setState(() => _legs.add(
-                          StrategyLeg(symbol: symbol, side: _draftSide, quantity: quantity),
-                        ));
-                    _symbolController.clear();
-                    _appendEvent('Draft leg added: $symbol. No order was sent.');
-                  },
-                  icon: const Icon(Icons.add),
-                  label: const Text('Add Draft Leg'),
-                ),
-              ]),
+    padding: const EdgeInsets.all(16),
+    children: [
+      Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Add Strategy Leg',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _symbolController,
+                textCapitalization: TextCapitalization.characters,
+                decoration: const InputDecoration(labelText: 'Trading symbol'),
+              ),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<String>(
+                initialValue: _draftSide,
+                decoration: const InputDecoration(labelText: 'Side'),
+                items: const [
+                  DropdownMenuItem(value: 'SELL', child: Text('SELL')),
+                  DropdownMenuItem(value: 'BUY', child: Text('BUY')),
+                ],
+                onChanged: (value) =>
+                    setState(() => _draftSide = value ?? 'SELL'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _quantityController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Quantity'),
+              ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () {
+                  final symbol = _symbolController.text.trim().toUpperCase();
+                  final quantity = int.tryParse(
+                    _quantityController.text.trim(),
+                  );
+                  if (symbol.isEmpty || quantity == null || quantity <= 0) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Enter a symbol and positive quantity.'),
+                      ),
+                    );
+                    return;
+                  }
+                  setState(
+                    () => _legs.add(
+                      StrategyLeg(
+                        symbol: symbol,
+                        side: _draftSide,
+                        quantity: quantity,
+                      ),
+                    ),
+                  );
+                  _symbolController.clear();
+                  _appendEvent('Draft leg added: $symbol. No order was sent.');
+                },
+                icon: const Icon(Icons.add),
+                label: const Text('Add Draft Leg'),
+              ),
+            ],
+          ),
+        ),
+      ),
+      const SizedBox(height: 8),
+      ..._legs.asMap().entries.map((entry) {
+        final index = entry.key;
+        final leg = entry.value;
+        return Card(
+          child: ListTile(
+            title: Text(leg.symbol),
+            subtitle: Text('${leg.side} · ${leg.quantity}'),
+            trailing: IconButton(
+              tooltip: 'Remove draft leg',
+              onPressed: () => setState(() => _legs.removeAt(index)),
+              icon: const Icon(Icons.delete_outline),
             ),
           ),
-          const SizedBox(height: 8),
-          ..._legs.asMap().entries.map((entry) {
-            final index = entry.key;
-            final leg = entry.value;
-            return Card(
-              child: ListTile(
-                title: Text(leg.symbol),
-                subtitle: Text('${leg.side} · ${leg.quantity}'),
-                trailing: IconButton(
-                  tooltip: 'Remove draft leg',
-                  onPressed: () => setState(() => _legs.removeAt(index)),
-                  icon: const Icon(Icons.delete_outline),
-                ),
-              ),
-            );
-          }),
-        ],
-      );
+        );
+      }),
+    ],
+  );
 
   Widget _riskPage() => ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('Portfolio risk draft', style: Theme.of(context).textTheme.titleMedium),
-                _numberRow('Target profit (₹)', _target, (value) => setState(() => _target = value)),
-                _numberRow('Stop loss (₹)', _stoploss, (value) => setState(() => _stoploss = value)),
-                SwitchListTile(title: const Text('Trailing stop'), value: _trailingStop,
-                    onChanged: (value) => setState(() => _trailingStop = value)),
-                if (_trailingStop) _numberRow('Trailing gap (₹)', _trailingGap, (value) => setState(() => _trailingGap = value)),
-                SwitchListTile(title: const Text('Auto square-off'), value: _autoSquareoff,
-                    onChanged: (value) => setState(() => _autoSquareoff = value)),
-              ]),
-            ),
-          ),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('Trigger conditions (draft only)', style: Theme.of(context).textTheme.titleMedium),
-                DropdownButtonFormField<String>(
-                  initialValue: _combineMode,
-                  decoration: const InputDecoration(labelText: 'Combine enabled conditions'),
-                  items: const [DropdownMenuItem(value: 'AND', child: Text('All enabled gates (AND)')), DropdownMenuItem(value: 'OR', child: Text('Any enabled gate (OR)'))],
-                  onChanged: (value) => setState(() => _combineMode = value ?? 'AND'),
+    padding: const EdgeInsets.all(16),
+    children: [
+      Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Portfolio risk draft',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              _numberRow(
+                'Target profit (₹)',
+                _target,
+                (value) => setState(() => _target = value),
+              ),
+              _numberRow(
+                'Stop loss (₹)',
+                _stoploss,
+                (value) => setState(() => _stoploss = value),
+              ),
+              SwitchListTile(
+                title: const Text('Trailing stop'),
+                value: _trailingStop,
+                onChanged: (value) => setState(() => _trailingStop = value),
+              ),
+              if (_trailingStop)
+                _numberRow(
+                  'Trailing gap (₹)',
+                  _trailingGap,
+                  (value) => setState(() => _trailingGap = value),
                 ),
-                SwitchListTile(title: const Text('Combo premium threshold'), value: _usePremium,
-                    onChanged: (value) => setState(() => _usePremium = value)),
-                if (_usePremium) _numberRow('Premium target', _premiumTarget, (value) => setState(() => _premiumTarget = value)),
-                SwitchListTile(title: const Text('Time gate'), value: _useTime,
-                    onChanged: (value) => setState(() => _useTime = value)),
-                if (_useTime) ListTile(title: Text('Target time: $_timeTarget'), trailing: const Icon(Icons.schedule),
-                    onTap: () async {
-                      final picked = await showTimePicker(context: context, initialTime: const TimeOfDay(hour: 9, minute: 20));
-                      if (picked != null) setState(() => _timeTarget = '${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}');
-                    }),
-                SwitchListTile(title: const Text('Premium vs VWAP gate'), value: _useVwap,
-                    onChanged: (value) => setState(() => _useVwap = value)),
-                const SizedBox(height: 8),
-                FilledButton.icon(
-                  onPressed: null,
-                  icon: const Icon(Icons.lock_outline),
-                  label: const Text('Live arming unavailable in Flutter migration'),
-                ),
-                const SizedBox(height: 8),
-                Text('Mode: $_combineMode · P&L controls are not connected to live positions.',
-                    style: Theme.of(context).textTheme.bodySmall),
-              ]),
-            ),
+              SwitchListTile(
+                title: const Text('Auto square-off'),
+                value: _autoSquareoff,
+                onChanged: (value) => setState(() => _autoSquareoff = value),
+              ),
+            ],
           ),
-        ],
-      );
+        ),
+      ),
+      Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Trigger conditions (draft only)',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              DropdownButtonFormField<String>(
+                initialValue: _combineMode,
+                decoration: const InputDecoration(
+                  labelText: 'Combine enabled conditions',
+                ),
+                items: const [
+                  DropdownMenuItem(
+                    value: 'AND',
+                    child: Text('All enabled gates (AND)'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'OR',
+                    child: Text('Any enabled gate (OR)'),
+                  ),
+                ],
+                onChanged: (value) =>
+                    setState(() => _combineMode = value ?? 'AND'),
+              ),
+              SwitchListTile(
+                title: const Text('Combo premium threshold'),
+                value: _usePremium,
+                onChanged: (value) => setState(() => _usePremium = value),
+              ),
+              if (_usePremium)
+                _numberRow(
+                  'Premium target',
+                  _premiumTarget,
+                  (value) => setState(() => _premiumTarget = value),
+                ),
+              SwitchListTile(
+                title: const Text('Time gate'),
+                value: _useTime,
+                onChanged: (value) => setState(() => _useTime = value),
+              ),
+              if (_useTime)
+                ListTile(
+                  title: Text('Target time: $_timeTarget'),
+                  trailing: const Icon(Icons.schedule),
+                  onTap: () async {
+                    final picked = await showTimePicker(
+                      context: context,
+                      initialTime: const TimeOfDay(hour: 9, minute: 20),
+                    );
+                    if (picked != null)
+                      setState(
+                        () => _timeTarget =
+                            '${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}',
+                      );
+                  },
+                ),
+              SwitchListTile(
+                title: const Text('Premium vs VWAP gate'),
+                value: _useVwap,
+                onChanged: (value) => setState(() => _useVwap = value),
+              ),
+              const SizedBox(height: 8),
+              FilledButton.icon(
+                onPressed: null,
+                icon: const Icon(Icons.lock_outline),
+                label: const Text(
+                  'Live arming unavailable in Flutter migration',
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Mode: $_combineMode · P&L controls are not connected to live positions.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
+        ),
+      ),
+    ],
+  );
 
-  Widget _numberRow(String label, double value, ValueChanged<double> onChanged) {
+  Widget _numberRow(
+    String label,
+    double value,
+    ValueChanged<double> onChanged,
+  ) {
     return Padding(
       padding: const EdgeInsets.only(top: 10),
       child: TextFormField(
         initialValue: value.toStringAsFixed(value % 1 == 0 ? 0 : 2),
-        keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+        keyboardType: const TextInputType.numberWithOptions(
+          decimal: true,
+          signed: true,
+        ),
         decoration: InputDecoration(labelText: label),
         onFieldSubmitted: (text) {
           final parsed = double.tryParse(text);
@@ -482,22 +631,29 @@ class _EngineHomePageState extends State<EngineHomePage> {
   }
 
   Widget _activityPage() => ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Text('Local activity', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 8),
-          ..._events.map((event) => Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(event, style: const TextStyle(fontFamily: 'monospace')),
-                ),
-              )),
-        ],
-      );
+    padding: const EdgeInsets.all(16),
+    children: [
+      Text('Local activity', style: Theme.of(context).textTheme.titleLarge),
+      const SizedBox(height: 8),
+      ..._events.map(
+        (event) => Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Text(event, style: const TextStyle(fontFamily: 'monospace')),
+          ),
+        ),
+      ),
+    ],
+  );
 }
 
 class StrategyLeg {
-  StrategyLeg({required this.symbol, required this.side, required this.quantity, this.enabled = true});
+  StrategyLeg({
+    required this.symbol,
+    required this.side,
+    required this.quantity,
+    this.enabled = true,
+  });
   final String symbol;
   final String side;
   final int quantity;
@@ -505,25 +661,37 @@ class StrategyLeg {
 }
 
 class _MetricCard extends StatelessWidget {
-  const _MetricCard({required this.title, required this.value, required this.icon});
+  const _MetricCard({
+    required this.title,
+    required this.value,
+    required this.icon,
+  });
   final String title;
   final String value;
   final IconData icon;
 
   @override
   Widget build(BuildContext context) => SizedBox(
-        width: 165,
-        child: Card(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Icon(icon, color: _accent),
-              const SizedBox(height: 8),
-              Text(title, style: Theme.of(context).textTheme.labelMedium),
-              const SizedBox(height: 4),
-              Text(value, style: Theme.of(context).textTheme.headlineSmall?.copyWith(color: _accent)),
-            ]),
-          ),
+    width: 165,
+    child: Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: _accent),
+            const SizedBox(height: 8),
+            Text(title, style: Theme.of(context).textTheme.labelMedium),
+            const SizedBox(height: 4),
+            Text(
+              value,
+              style: Theme.of(
+                context,
+              ).textTheme.headlineSmall?.copyWith(color: _accent),
+            ),
+          ],
         ),
-      );
+      ),
+    ),
+  );
 }
