@@ -318,7 +318,7 @@ class _EngineHomePageState extends State<EngineHomePage> {
       const Wrap(
         spacing: 12,
         runSpacing: 12,
-        children: const [
+        children: [
           _MetricCard(title: 'NET P&L', value: '—', icon: Icons.currency_rupee),
           _MetricCard(
             title: 'COMBO PREMIUM',
@@ -382,8 +382,8 @@ class _EngineHomePageState extends State<EngineHomePage> {
         color: _surface,
         child: ListTile(
           leading: Icon(Icons.warning_amber, color: Colors.amber),
-          title: const Text('Live execution is intentionally locked'),
-          subtitle: const Text(
+          title: Text('Live execution is intentionally locked'),
+          subtitle: Text(
             'The current enctoken endpoint is unofficial and has not been validated from this Flutter client.',
           ),
         ),
