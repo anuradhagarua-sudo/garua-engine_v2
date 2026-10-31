@@ -55,7 +55,20 @@ jobs:
         run: dart format lib test
 
       - name: Analyze Flutter app
-        run: flutter analyze
+        run: |
+          set +e
+          NO_COLOR=1 flutter analyze --machine > analyze-results.txt 2>&1
+          result=$?
+          cat analyze-results.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          for line in Path('analyze-results.txt').read_text().splitlines():
+              if not line.strip():
+                  continue
+              message = line.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print(f'::error::Flutter analyzer: {message}')
+          PY
+          exit "$result"
 
       - name: Test Flutter app
         run: flutter test
