@@ -51,11 +51,14 @@ jobs:
       - name: Resolve Dart dependencies
         run: flutter pub get
 
-      - name: Format, analyze, and test
-        run: |
-          dart format lib test
-          flutter analyze
-          flutter test
+      - name: Format Dart sources
+        run: dart format --set-exit-if-changed lib test
+
+      - name: Analyze Flutter app
+        run: flutter analyze
+
+      - name: Test Flutter app
+        run: flutter test
 
       - name: Build release APK
         run: flutter build apk --release
