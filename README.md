@@ -6,8 +6,9 @@ Android trading dashboard with a legacy Kivy/Python implementation and an in-pro
 
 The Flutter project is in `flutter_app/`. It includes the dashboard, draft legs, risk/trigger controls, and two authentication options:
 
-1. **Kite Connect (recommended):** signs in through Kite's official hosted login, then exchanges the one-time request token through the companion HTTPS service in `kite_auth_server/`.
-2. **Legacy enctoken:** retained for compatibility only; it uses an unofficial Zerodha web-session endpoint.
+1. **Kite Connect:** signs in through Kite's official hosted login, then exchanges the one-time request token through the companion HTTPS service in `kite_auth_server/`. This requires a Kite Connect app/API key.
+2. **Open Kite website:** launches `https://kite.zerodha.com/` in the device browser, with no API key required. This signs the user into Kite's website only; it does **not** authenticate Garua Engine or return a supported API token to it.
+3. **Legacy enctoken:** retained for compatibility only; it uses an unofficial Zerodha web-session endpoint.
 
 Live market streaming, portfolio synchronization, and order execution are intentionally disabled. Successful authentication is not proof that the Flutter app is ready for live trading.
 

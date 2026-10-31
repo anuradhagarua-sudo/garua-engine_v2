@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'screens/kite_login_page.dart';
 import 'services/broker_session_service.dart';
@@ -8,6 +9,8 @@ void main() => runApp(const GaruaEngineApp());
 const _accent = Color(0xFF66FCF1);
 const _background = Color(0xFF0B0C10);
 const _surface = Color(0xFF1F2833);
+
+enum _LoginChoice { kiteConnect, kiteWebsite, legacyEnctoken }
 
 class GaruaEngineApp extends StatelessWidget {
   const GaruaEngineApp({super.key});
@@ -115,32 +118,84 @@ class _EngineHomePageState extends State<EngineHomePage> {
   }
 
   Future<void> _showLogin() async {
-    final useKiteConnect = await showDialog<bool>(
+    final choice = await showDialog<_LoginChoice>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Connect to Zerodha'),
-        content: const Text(
-          'Recommended: sign in with your Kite Connect app. Your user ID, password, PIN, and TOTP are entered only on Kite’s official login page. The legacy enctoken method is unofficial.',
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'You can open Kite in your browser without a Kite Connect subscription. Browser sign-in is separate and will not connect this app. Kite Connect app authentication requires an API key; enctoken remains an unofficial fallback.',
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop(_LoginChoice.kiteWebsite),
+              icon: const Icon(Icons.open_in_browser),
+              label: const Text('Open Kite website'),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop(_LoginChoice.kiteConnect),
+              icon: const Icon(Icons.vpn_key_outlined),
+              label: const Text('Kite Connect (API key required)'),
+            ),
+            TextButton(
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop(_LoginChoice.legacyEnctoken),
+              child: const Text('Legacy enctoken'),
+            ),
+          ],
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Legacy enctoken'),
-          ),
-          FilledButton.icon(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            icon: const Icon(Icons.open_in_browser),
-            label: const Text('Kite Connect'),
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancel'),
           ),
         ],
       ),
     );
     if (!mounted) return;
-    if (useKiteConnect == true) {
-      await _showKiteConnectLogin();
-    } else if (useKiteConnect == false) {
-      await _showEnctokenLogin();
+    switch (choice) {
+      case _LoginChoice.kiteConnect:
+        await _showKiteConnectLogin();
+        return;
+      case _LoginChoice.kiteWebsite:
+        await _openKiteWebsite();
+        return;
+      case _LoginChoice.legacyEnctoken:
+        await _showEnctokenLogin();
+        return;
+      case null:
+        return;
     }
+  }
+
+  Future<void> _openKiteWebsite() async {
+    final opened = await launchUrl(
+      Uri.https('kite.zerodha.com'),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!mounted) return;
+    if (!opened) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not open the official Kite website.'),
+        ),
+      );
+      return;
+    }
+    _appendEvent('Opened the official Kite website in the external browser.');
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Kite opened in your browser. Browser sign-in does not connect Garua Engine.',
+        ),
+      ),
+    );
   }
 
   Future<void> _showKiteConnectLogin() async {

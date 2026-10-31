@@ -23,10 +23,13 @@ void main() {
     await tester.tap(find.byTooltip('Connect broker'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Kite Connect'), findsOneWidget);
+    expect(find.text('Kite Connect (API key required)'), findsOneWidget);
+    expect(find.text('Open Kite website'), findsOneWidget);
     expect(find.text('Legacy enctoken'), findsOneWidget);
     expect(
-      find.textContaining('password, PIN, and TOTP are entered only on Kite'),
+      find.textContaining(
+        'Browser sign-in is separate and will not connect this app',
+      ),
       findsOneWidget,
     );
   });
