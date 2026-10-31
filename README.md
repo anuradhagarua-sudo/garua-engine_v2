@@ -1,15 +1,20 @@
 # Garua Engine V2
 
-Android/Kivy trading dashboard and strategy runner.
+Android trading dashboard with a legacy Kivy/Python implementation and an in-progress Flutter/Dart migration.
 
-## Build the Android APK
+## Flutter migration
 
-The repository's GitHub Actions workflow builds a debug APK on pull requests to `main`/`master`, matching pushes, or a manual workflow dispatch. The APK is uploaded as a workflow artifact. A local build requires Buildozer, the Android SDK/NDK, Java, and the dependencies listed in `buildozer.spec`.
+The Flutter project is in `flutter_app/`. The initial Flutter build includes the dashboard, draft legs, risk/trigger controls, and a broker-session connectivity check. **It is not yet a complete trading replacement:** live market streaming, portfolio synchronization, and order execution are intentionally disabled. The enctoken endpoint is unofficial and must not be treated as production authentication.
+
+The **Flutter Android APK** workflow runs on Arena-branch pushes, pull requests to `main`/`master`, or manual dispatch. It formats, analyzes, tests, builds a release APK, and uploads `Garua-Engine-Flutter-APK`.
+
+## Legacy Python build
+
+`main.py` and `buildozer.spec` retain the original Kivy/Flask implementation. The **Build Android APK** workflow still builds that legacy app. Do not confuse its artifact with the Flutter APK.
 
 ## Credentials and safety
 
-- Enter the broker user ID and session token only in the app on the device. Never commit credentials or send them in chat.
-- Credentials are kept in process memory and are not written to the repository or a local credential file. The app verifies the session against the broker before enabling streaming.
-- The dashboard binds to the device loopback interface and rejects remote and cross-origin requests.
-- This version uses Zerodha web-session (`enctoken`) endpoints, which are not the supported Kite Connect API and can change without notice. Authentication, market data, order execution, and fills have not been validated against a live account in this environment.
-- Trading can lose money. Verify data, order status, position reconciliation, and exit behavior in a non-live environment before considering any live use. The app is not a substitute for broker-side risk controls.
+- Never commit or send broker credentials in chat. Enter them only on the device.
+- The Flutter migration stores a verified session in Android secure storage. The legacy Python app keeps the session in process memory.
+- The existing enctoken-based implementation uses unofficial Zerodha web-session endpoints that can change or reject non-browser clients. For dependable trading integration, migrate to the official Kite Connect API.
+- Live trading can lose money. Verify authentication, market data, order status, portfolio reconciliation, and exit behavior in a non-live environment before enabling live orders. The Flutter port currently sends no orders.
