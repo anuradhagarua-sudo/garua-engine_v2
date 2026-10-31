@@ -7,19 +7,26 @@ import 'package:http/http.dart' as http;
 
 class BrokerSessionService {
   BrokerSessionService({http.Client? client, FlutterSecureStorage? storage})
-      : _client = client ?? http.Client(),
-        _storage = storage ?? const FlutterSecureStorage();
+    : _client = client ?? http.Client(),
+      _storage = storage ?? const FlutterSecureStorage();
 
-  static final Uri _profileUri =
-      Uri.https('kite.zerodha.com', '/oms/user/profile/full');
+  static final Uri _profileUri = Uri.https(
+    'kite.zerodha.com',
+    '/oms/user/profile/full',
+  );
   final http.Client _client;
   final FlutterSecureStorage _storage;
 
-  Future<void> connect({required String userId, required String enctoken}) async {
+  Future<void> connect({
+    required String userId,
+    required String enctoken,
+  }) async {
     final id = userId.trim();
     final token = enctoken.trim();
     if (id.isEmpty || token.isEmpty) {
-      throw const BrokerSessionException('Enter both your broker user ID and session token.');
+      throw const BrokerSessionException(
+        'Enter both your broker user ID and session token.',
+      );
     }
 
     late final http.Response response;
@@ -43,7 +50,9 @@ class BrokerSessionService {
       );
     } on SocketException catch (error) {
       final detail = _safeTransportDetail(error.message);
-      throw BrokerSessionException('Network/DNS error reaching Zerodha: $detail');
+      throw BrokerSessionException(
+        'Network/DNS error reaching Zerodha: $detail',
+      );
     } on TimeoutException {
       throw const BrokerSessionException(
         'Zerodha did not respond in time. Check internet access and retry.',
@@ -63,7 +72,9 @@ class BrokerSessionService {
       payload = decoded;
     } on FormatException {
       if (response.statusCode == 401 || response.statusCode == 403) {
-        throw const BrokerSessionException('Zerodha rejected this session token. Sign in again and use a fresh token.');
+        throw const BrokerSessionException(
+          'Zerodha rejected this session token. Sign in again and use a fresh token.',
+        );
       }
       throw BrokerSessionException(
         'Zerodha returned an unexpected response (HTTP ${response.statusCode}).',
@@ -78,7 +89,8 @@ class BrokerSessionService {
 
     final data = payload['data'];
     final brokerUserId = data is Map ? '${data['user_id'] ?? ''}'.trim() : '';
-    if (brokerUserId.isEmpty || brokerUserId.toLowerCase() != id.toLowerCase()) {
+    if (brokerUserId.isEmpty ||
+        brokerUserId.toLowerCase() != id.toLowerCase()) {
       throw const BrokerSessionException(
         'The broker response did not confirm the entered user ID.',
       );
@@ -98,7 +110,9 @@ class BrokerSessionService {
 
   String _safeTransportDetail(String value) {
     final sanitized = value.replaceAll(RegExp(r'[\r\n\t]+'), ' ').trim();
-    return sanitized.length > 150 ? '${sanitized.substring(0, 150)}…' : sanitized;
+    return sanitized.length > 150
+        ? '${sanitized.substring(0, 150)}…'
+        : sanitized;
   }
 }
 

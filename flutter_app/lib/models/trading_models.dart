@@ -89,31 +89,49 @@ class StrategyConfig {
   bool matches(StrategySnapshot snapshot) {
     final evaluations = <bool>[];
     if (premiumEnabled) {
-      evaluations.add(_compare(snapshot.comboPremium, premiumThreshold, premiumComparison));
+      evaluations.add(
+        _compare(snapshot.comboPremium, premiumThreshold, premiumComparison),
+      );
     }
     if (premiumDifferenceEnabled) {
       final difference = snapshot.premiumDifference;
-      evaluations.add(difference != null && difference <= premiumDifferenceMaximum);
+      evaluations.add(
+        difference != null && difference <= premiumDifferenceMaximum,
+      );
     }
     if (premiumVwapEnabled) {
       final premium = snapshot.comboPremium;
       final vwap = snapshot.comboVwap;
-      evaluations.add(premium != null && vwap != null &&
-          (premiumAboveVwap ? premium > vwap : premium < vwap));
+      evaluations.add(
+        premium != null &&
+            vwap != null &&
+            (premiumAboveVwap ? premium > vwap : premium < vwap),
+      );
     }
     if (timeEnabled) {
       final time = snapshot.localTime;
       final currentMinutes = time == null ? null : time.hour * 60 + time.minute;
-      evaluations.add(currentMinutes != null && currentMinutes >= timeTargetMinutes);
+      evaluations.add(
+        currentMinutes != null && currentMinutes >= timeTargetMinutes,
+      );
     }
     if (underlyingEnabled) {
-      evaluations.add(_compare(snapshot.underlyingPrice, underlyingThreshold, underlyingComparison));
+      evaluations.add(
+        _compare(
+          snapshot.underlyingPrice,
+          underlyingThreshold,
+          underlyingComparison,
+        ),
+      );
     }
     if (underlyingVwapEnabled) {
       final price = snapshot.underlyingPrice;
       final vwap = snapshot.underlyingVwap;
-      evaluations.add(price != null && vwap != null &&
-          (underlyingAboveVwap ? price > vwap : price < vwap));
+      evaluations.add(
+        price != null &&
+            vwap != null &&
+            (underlyingAboveVwap ? price > vwap : price < vwap),
+      );
     }
     if (ivEnabled) {
       evaluations.add(_compare(snapshot.comboIv, ivThreshold, ivComparison));
@@ -151,17 +169,26 @@ class RiskSettings {
   final bool trailingEnabled;
   final double trailingGap;
 
-  double nextTrailingStop({required double? previousStop, required double pnl}) {
+  double nextTrailingStop({
+    required double? previousStop,
+    required double pnl,
+  }) {
     if (!trailingEnabled) return maximumLoss;
     final candidate = pnl > 0 ? pnl - trailingGap : maximumLoss;
     final floor = previousStop ?? maximumLoss;
     return candidate > floor ? candidate : floor;
   }
 
-  bool shouldSquareoff({required double pnl, double? trailingStop, bool panic = false}) {
+  bool shouldSquareoff({
+    required double pnl,
+    double? trailingStop,
+    bool panic = false,
+  }) {
     if (panic) return true;
     if (!autoSquareoff) return false;
-    final activeStop = trailingEnabled ? (trailingStop ?? maximumLoss) : maximumLoss;
+    final activeStop = trailingEnabled
+        ? (trailingStop ?? maximumLoss)
+        : maximumLoss;
     return pnl >= targetProfit || pnl <= activeStop;
   }
 }
