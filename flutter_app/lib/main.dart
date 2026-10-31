@@ -315,7 +315,7 @@ class _EngineHomePageState extends State<EngineHomePage> {
   Widget _dashboardPage() => ListView(
     padding: const EdgeInsets.all(16),
     children: [
-      Wrap(
+      const Wrap(
         spacing: 12,
         runSpacing: 12,
         children: const [
@@ -378,10 +378,10 @@ class _EngineHomePageState extends State<EngineHomePage> {
           ),
         ),
       ),
-      Card(
+      const Card(
         color: _surface,
         child: ListTile(
-          leading: const Icon(Icons.warning_amber, color: Colors.amber),
+          leading: Icon(Icons.warning_amber, color: Colors.amber),
           title: const Text('Live execution is intentionally locked'),
           subtitle: const Text(
             'The current enctoken endpoint is unofficial and has not been validated from this Flutter client.',
@@ -576,11 +576,12 @@ class _EngineHomePageState extends State<EngineHomePage> {
                       context: context,
                       initialTime: const TimeOfDay(hour: 9, minute: 20),
                     );
-                    if (picked != null)
+                    if (picked != null) {
                       setState(
                         () => _timeTarget =
                             '${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}',
                       );
+                    }
                   },
                 ),
               SwitchListTile(
