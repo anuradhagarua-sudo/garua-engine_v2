@@ -261,6 +261,7 @@ class _EngineHomePageState extends State<EngineHomePage> {
 
     try {
       await _broker.saveKiteSettings(settings);
+      if (!mounted) return;
       final requestToken = await Navigator.of(context).push<String>(
         MaterialPageRoute<String>(
           builder: (_) => KiteLoginPage(settings: settings),
