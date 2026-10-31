@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'screens/kite_login_page.dart';
 import 'services/broker_session_service.dart';
 
 void main() => runApp(const GaruaEngineApp());
@@ -114,6 +115,191 @@ class _EngineHomePageState extends State<EngineHomePage> {
   }
 
   Future<void> _showLogin() async {
+    final useKiteConnect = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Connect to Zerodha'),
+        content: const Text(
+          'Recommended: sign in with your Kite Connect app. Your user ID, password, PIN, and TOTP are entered only on Kite’s official login page. The legacy enctoken method is unofficial.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Legacy enctoken'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            icon: const Icon(Icons.open_in_browser),
+            label: const Text('Kite Connect'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (useKiteConnect == true) {
+      await _showKiteConnectLogin();
+    } else if (useKiteConnect == false) {
+      await _showEnctokenLogin();
+    }
+  }
+
+  Future<void> _showKiteConnectLogin() async {
+    final saved = await _broker.readKiteSettings();
+    if (!mounted) return;
+    final apiKeyController = TextEditingController(text: saved?.apiKey ?? '');
+    final redirectController = TextEditingController(
+      text: saved?.redirectUrl ?? '',
+    );
+    final backendController = TextEditingController(
+      text: saved?.backendUrl ?? '',
+    );
+    final formKey = GlobalKey<FormState>();
+    String? error;
+
+    final settings = await showDialog<KiteConnectSettings>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Kite Connect setup'),
+          content: SizedBox(
+            width: 480,
+            child: SingleChildScrollView(
+              child: Form(
+                key: formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Create a Kite Connect app in the Kite developer console. Enter its API key and the exact HTTPS redirect URL registered there. Configure the matching API key and API secret on your private HTTPS token-exchange server; never paste the API secret here.',
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: apiKeyController,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      decoration: const InputDecoration(
+                        labelText: 'Kite Connect API key',
+                      ),
+                      validator: (value) =>
+                          value == null || value.trim().isEmpty
+                          ? 'API key is required'
+                          : null,
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: redirectController,
+                      keyboardType: TextInputType.url,
+                      autocorrect: false,
+                      decoration: const InputDecoration(
+                        labelText: 'Registered HTTPS redirect URL',
+                        hintText: 'https://your-domain.example/kite/callback',
+                      ),
+                      validator: (value) =>
+                          value == null || value.trim().isEmpty
+                          ? 'Registered redirect URL is required'
+                          : null,
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: backendController,
+                      keyboardType: TextInputType.url,
+                      autocorrect: false,
+                      decoration: const InputDecoration(
+                        labelText: 'Token-exchange backend URL',
+                        hintText:
+                            'https://your-domain.example/api/kite/session',
+                      ),
+                      validator: (value) =>
+                          value == null || value.trim().isEmpty
+                          ? 'Backend URL is required'
+                          : null,
+                    ),
+                    if (error != null) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        error!,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                if (!formKey.currentState!.validate()) return;
+                final configuration = KiteConnectSettings(
+                  apiKey: apiKeyController.text,
+                  redirectUrl: redirectController.text,
+                  backendUrl: backendController.text,
+                );
+                final validationError = configuration.validationError;
+                if (validationError != null) {
+                  setDialogState(() => error = validationError);
+                  return;
+                }
+                Navigator.of(dialogContext).pop(configuration);
+              },
+              child: const Text('Continue to Kite'),
+            ),
+          ],
+        ),
+      ),
+    );
+    apiKeyController.dispose();
+    redirectController.dispose();
+    backendController.dispose();
+    if (settings == null || !mounted) return;
+
+    try {
+      await _broker.saveKiteSettings(settings);
+      final requestToken = await Navigator.of(context).push<String>(
+        MaterialPageRoute<String>(
+          builder: (_) => KiteLoginPage(settings: settings),
+        ),
+      );
+      if (requestToken == null || !mounted) return;
+
+      final profile = await _broker.connectWithKiteConnect(
+        settings: settings,
+        requestToken: requestToken,
+      );
+      if (!mounted) return;
+      setState(() => _connected = true);
+      _appendEvent('Kite Connect session verified for ${profile.userId}.');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Kite Connect authenticated: ${profile.userId}'),
+        ),
+      );
+    } on BrokerSessionException catch (exception) {
+      if (!mounted) return;
+      _appendEvent('Kite Connect sign-in failed: ${exception.message}');
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(exception.message)));
+    } catch (_) {
+      if (!mounted) return;
+      _appendEvent('Kite Connect sign-in failed with an unexpected error.');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Kite Connect login failed. Check the server and retry.',
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _showEnctokenLogin() async {
     final userIdController = TextEditingController();
     final tokenController = TextEditingController();
     final formKey = GlobalKey<FormState>();
@@ -127,7 +313,7 @@ class _EngineHomePageState extends State<EngineHomePage> {
         final navigator = Navigator.of(dialogContext);
         return StatefulBuilder(
           builder: (context, setDialogState) => AlertDialog(
-            title: const Text('Zerodha session'),
+            title: const Text('Legacy Zerodha enctoken'),
             content: SizedBox(
               width: 460,
               child: Form(
@@ -136,7 +322,7 @@ class _EngineHomePageState extends State<EngineHomePage> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     const Text(
-                      'Enter credentials on this device only. The session token is stored in Android secure storage only after verification.',
+                      'This unofficial session-token method is retained for compatibility. Prefer Kite Connect. Never enter your Kite password or TOTP here.',
                     ),
                     const SizedBox(height: 16),
                     TextFormField(
@@ -188,13 +374,13 @@ class _EngineHomePageState extends State<EngineHomePage> {
                           error = null;
                         });
                         try {
-                          await _broker.connect(
+                          await _broker.connectWithEnctoken(
                             userId: userIdController.text,
                             enctoken: tokenController.text,
                           );
                           if (!mounted) return;
                           setState(() => _connected = true);
-                          _appendEvent('Broker session verified.');
+                          _appendEvent('Legacy broker session verified.');
                           navigator.pop();
                         } on BrokerSessionException catch (exception) {
                           setDialogState(() {
@@ -202,7 +388,7 @@ class _EngineHomePageState extends State<EngineHomePage> {
                             error = exception.message;
                           });
                           _appendEvent(
-                            'Broker sign-in failed: ${exception.message}',
+                            'Legacy sign-in failed: ${exception.message}',
                           );
                         } catch (_) {
                           setDialogState(() {
@@ -211,7 +397,7 @@ class _EngineHomePageState extends State<EngineHomePage> {
                                 'Unexpected sign-in error. Check the network and try again.';
                           });
                           _appendEvent(
-                            'Broker sign-in failed with an unexpected error.',
+                            'Legacy sign-in failed with an unexpected error.',
                           );
                         } finally {
                           tokenController.clear();
@@ -235,10 +421,14 @@ class _EngineHomePageState extends State<EngineHomePage> {
   }
 
   Future<void> _disconnect() async {
-    await _broker.disconnect();
+    final remoteLogoutConfirmed = await _broker.disconnect();
     if (!mounted) return;
     setState(() => _connected = false);
-    _appendEvent('Broker session cleared from secure storage.');
+    _appendEvent(
+      remoteLogoutConfirmed
+          ? 'Kite Connect session revoked and local credentials cleared.'
+          : 'Local broker credentials cleared; remote logout was not confirmed.',
+    );
   }
 
   @override

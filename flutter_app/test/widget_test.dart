@@ -15,4 +15,19 @@ void main() {
     );
     expect(find.text('DISCONNECTED'), findsOneWidget);
   });
+
+  testWidgets('offers official Kite Connect ahead of legacy enctoken', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const GaruaEngineApp());
+    await tester.tap(find.byTooltip('Connect broker'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Kite Connect'), findsOneWidget);
+    expect(find.text('Legacy enctoken'), findsOneWidget);
+    expect(
+      find.textContaining('password, PIN, and TOTP are entered only on Kite'),
+      findsOneWidget,
+    );
+  });
 }
